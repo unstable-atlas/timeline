@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { renderPoster, liveHeight, esc, spoilerState, cssVars, seeded } from './render.js';
+import { renderPoster, liveHeight, esc, spoilerState, cssVars, seeded, nebulaSVG, starField, drawStars, fnGlyph, starPoints, textWidth } from './render.js';
 import { Viewer } from './view.js';
 import { Search } from './search.js';
 
@@ -52,22 +52,25 @@ async function start() {
   settings = loadSettings();
   settings.spoiler.upTo = Math.min(Math.max(data.ep_first, settings.spoiler.upTo), data.ep_last);
   buildSky();
+  const nebulaDone = paintNebulae();
+  stars = { field: starField(data, theme, LH), ctx: $('#pstars').getContext('2d') };
 
   const fontsDone = loadFonts().then(() => body.classList.add('fonts'));
   const thumbsDone = preloadThumbs();
-  await fontsDone;   // text is measured with the page's fonts, so the poster is drawn once they're in
+  await Promise.all([fontsDone, nebulaDone]);   // text is measured with the page's fonts, so the poster is drawn once they're in
   document.title = `Unstable Universe Timeline · E${data.ep_first}–${data.ep_last}`;
   draw();
   viewer = new Viewer(stage, host, data.W, LH, {
     maxScale: S.site_max_scale, insets, fitHeight: () => phone && !land,
     homeScale: () => land ? S.site_land_home_zoom / 100 * fitScale() : null,
+    onTransform: v => { moveNebulae(v); paintStars(v); },
     rubberMax: S.site_rubber_max, rubberK: S.site_rubber_k, rubberMs: S.site_rubber_ms,
     onChange: frame, onSettle: settle, onTap: tap, onHover: hover, onGestureStart: () => { hoverLabel(null); },
   });
   const h = viewer.home();
   viewer.set(h.s, h.tx, h.ty);
   syncDock();
-  buildRail(); buildSpoilers(); buildSettings(); buildExport(); buildLegend();
+  buildRail(); buildSpoilers(); buildSettings(); buildExport(); buildLegend(); buildMajorTags();
   search = new Search($('#search'), { data, sp, thumbs, faces: faces(), go: goToResult,
     glyph: (kind, tier, num) => kind === 'major' ? diamondSVG(24) : glyphSVG(tier, num) });
   applyHash(true);
@@ -188,7 +191,7 @@ function draw() {
   const t = performance.now();
   host.innerHTML = renderPoster(data, theme, { live: true, thumbs, faces: faces(), settings, background: bgImage, bgDim: settings.bgDim });
   host.style.width = data.W + 'px'; host.style.height = LH + 'px';
-  host.firstElementChild.style.overflow = 'visible';   // nebulae fade past the poster's edges instead of ending there
+  host.firstElementChild.style.overflow = 'visible';   // its painted area is the nebulae's reach (see renderPoster)
   idx.ep.clear(); idx.ev.clear(); idx.mj.clear();
   for (const el of host.querySelectorAll('[data-ep]')) { const k = el.dataset.ep; if (!idx.ep.has(k)) idx.ep.set(k, []); idx.ep.get(k).push(el); }
   for (const el of host.querySelectorAll('.evmark[data-num], [data-stem]')) {
@@ -198,13 +201,48 @@ function draw() {
   idx.dim = [...host.querySelectorAll('[data-dim]')];
   hlKey = null; hlEls = []; boosts = [];
   $('#bgimg').hidden = !bgImage;
-  $('#starfield').hidden = !!bgImage;
+  $('#starfield').hidden = $('#nebula').hidden = $('#pstars').hidden = !!bgImage;
+  if (viewer) paintStars(viewer);
   if (bgImage) { $('#bgimg').style.backgroundImage = `url(${bgImage})`; $('#bgimg').style.setProperty('--bg-dim', settings.bgDim); }
-  if (focusArcId) applyFocus(focusArcId, false);
+  if (focusArcId) applyFocus(focusArcId, false); else if (focusLineP) applyLineFocus(focusLineP);
   updateSpoilerUI();
   buildDock();
+  tagBlock = null;
   if (viewer) { syncDock(); frame(viewer.view()); }
   window.__timing = { ...(window.__timing || {}), draw: performance.now() - t };
+}
+
+// The nebulae as a bitmap at NEBULA_K poster px per pixel, in an <img> of its own that moves with the camera
+// (moveNebulae). As an image layer the compositor only scales it: WebKit repainted an SVG layer, or a <canvas> inside a
+// moving element, on every zoom step.
+const NEBULA_K = 8;
+let nebula = null;
+async function paintNebulae() {
+  const { svg, box: [x0, y0, x1, y1] } = nebulaSVG(data, theme, LH), img = new Image(), k = NEBULA_K;
+  img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  await img.decode().catch(() => {});
+  const cv = document.createElement('canvas');
+  cv.width = Math.ceil((x1 - x0) / k); cv.height = Math.ceil((y1 - y0) / k);
+  cv.getContext('2d').drawImage(img, 0, 0, (x1 - x0) / k, (y1 - y0) / k);
+  URL.revokeObjectURL(img.src);
+  const out = $('#nebula');
+  out.src = URL.createObjectURL(await new Promise(r => cv.toBlob(r)));
+  await out.decode().catch(() => {});
+  nebula = { x0, y0 };
+  if (viewer) moveNebulae(viewer);
+}
+function moveNebulae(v) {
+  if (nebula) $('#nebula').style.transform = `translate(${v.tx + nebula.x0 * v.s}px,${v.ty + nebula.y0 * v.s}px) scale(${v.s * NEBULA_K})`;
+}
+
+// The poster's own background stars, on a canvas the size of the stage, redrawn with every camera change.
+let stars = null;
+function paintStars(v) {
+  const cv = stars.ctx.canvas;
+  if (cv.hidden) return;
+  const dpr = devicePixelRatio || 1, vw = v.vw, vh = v.vh, w = Math.round(vw * dpr), h = Math.round(vh * dpr);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  drawStars(stars.ctx, stars.field, v.s, v.tx, v.ty, vw, vh, dpr);
 }
 
 // ---------------------------------------------------------------- the sky behind the poster
@@ -255,11 +293,14 @@ function frame(v) {
   geom = { x: ((a.x0 + a.x1) / 2 - v.tx) / v.s, y: ((a.y0 + a.y1) / 2 - v.ty) / v.s, s: v.s, home: atHome(), wide: v.vw > v.vh };
   moveSky(v);
   updateRail(v);
+  updateMajorTags(v);
+  if (!hoverEl.hidden) hoverLabel(null);   // it named what was under the pointer before the camera moved
   if (popState) placePop();
   if (lastS !== v.s) { lastS = v.s; $('#zoom-pct').textContent = `${Math.round(zoomPct(v.s))}%`; }
 }
 function settle(v) {
   updateLegendInView(v);
+  maybeKeyHint(v);
   if (!popState && !viewer.anim && !viewer.pointers.size) setHash(atHome() ? '' : viewHash(v));
 }
 
@@ -319,7 +360,8 @@ addEventListener('resize', () => {
   if (!data || !viewer) return;
   const was = mode, m = layoutMode(), g = geom;
   readSafe();
-  if (m !== was) { setMode(m); if ((was === 'desk') !== (m === 'desk')) closeSheet(); }
+  if (m !== was) { setMode(m); if ((was === 'desk') !== (m === 'desk')) closeSheet(); buildLegend(); }
+  tagBlock = null;
   if (g && (m !== was || (innerWidth > innerHeight) !== g.wide)) {
     viewer.stop();
     const t = g.home ? viewer.home() : viewer.centreOn(g.x, g.y, g.s);
@@ -328,6 +370,7 @@ addEventListener('resize', () => {
   } else viewer.set(viewer.s, viewer.tx, viewer.ty);
   syncDock();
   lastS = null;
+  placeKeyHint();
 });
 
 // Variables the panes move by: set on those elements only, never on :root, which would restyle the whole poster.
@@ -336,24 +379,43 @@ function setPaneVar(k, v) { for (const sel of PANES) $(sel).style.setProperty(k,
 
 // ---------------------------------------------------------------- left rail: whose line is this
 const rail = $('#rail');
-let railOn = false;
+let railOn = false, railFaceH = 0;
+const railPos = {};   // protagonist -> {y: top of the face on screen, chip}, as updateRail last placed them
 function buildRail() {
   rail.innerHTML = data.lines.map(l => `<div class="u-face" data-p="${esc(l.p)}" title="${esc(l.p)}"><img src="${CONFIG.faces}${esc(l.p)}.png" alt="${esc(l.p)}"><span>${esc(l.p)}</span></div>`).join('');
   rail.onclick = e => {
     const f = e.target.closest('.u-face'); if (!f) return;
-    const a = viewer.area(), y = lineY[f.dataset.p];
+    const p = f.dataset.p;
+    if (!f.classList.contains('chip')) {   // a face beside its line: who this is, and where to go on their line
+      closeTransient();
+      if (popState && popState.kind === 'line' && popState.p === p) return closePop();
+      return openPop({ kind: 'line', p });
+    }
+    const a = viewer.area(), y = lineY[p];
     viewer.animateTo({ s: viewer.s, tx: viewer.tx, ty: (a.y0 + a.y1) / 2 - y * viewer.s });
   };
+  rail.addEventListener('pointerover', e => {   // a mouse over a face flashes its line once
+    const f = e.target.closest('.u-face');
+    if (!f || f.classList.contains('chip') || e.pointerType !== 'mouse' || (e.relatedTarget && f.contains(e.relatedTarget))) return;
+    flashLine(f.dataset.p);
+  });
+}
+function flashLine(p) {   // the line's stroke bright for a moment, so a face is seen to belong to it
+  const els = host.querySelectorAll(`.pline[data-pl="${CSS.escape(p)}"], .pglow[data-pl="${CSS.escape(p)}"]`);
+  for (const el of els) el.classList.add('flash');
+  clearTimeout(flashLine.t);
+  flashLine.t = setTimeout(() => { for (const el of host.querySelectorAll('.flash')) el.classList.remove('flash'); }, 300);
 }
 function updateRail(v) {
   const ln = data.lines[0], F = S.face, faceCx = ln.face.x + 60 + F / 2;
   const railW = land ? S.site_rail_w_land : phone ? S.site_rail_w_phone : S.site_rail_w;
   const on = v.tx + faceCx * v.s < (land ? safe.l : 0) + railW;
-  if (on !== railOn) { railOn = on; rail.classList.toggle('on', on); setPaneVar('--rail-shift', on ? railW + 'px' : '0px'); }
+  if (on !== railOn) { railOn = on; rail.classList.toggle('on', on); setPaneVar('--rail-shift', on ? railW + 'px' : '0px'); tagBlock = null; }
   if (!on) return;
   const a = viewer.area(), fh = (land ? S.site_rail_face_land : phone ? S.site_rail_face_phone : S.site_rail_face) + (phone ? 4 : 18), ch = S.site_rail_chip + 14;
   let up = 0, down = 0;
   const items = rail.children;
+  railFaceH = fh;
   const ys = data.lines.map(l => v.ty + l.y * v.s);
   const nDown = ys.filter(y => y > a.y1).length;
   data.lines.forEach((l, k) => {
@@ -365,6 +427,7 @@ function updateRail(v) {
     el.classList.toggle('chip', !!chip); el.classList.toggle('up', chip === 'up'); el.classList.toggle('down', chip === 'down');
     el.style.transform = `translateY(${y.toFixed(1)}px)`;
     el.style.zIndex = chip ? 1 : 2;
+    railPos[l.p] = { y, chip: !!chip };
   });
 }
 
@@ -375,30 +438,30 @@ function updateRail(v) {
 const dock = $('#dock'), dockRow = $('#dock-row'), dockBtn = $('#dock-btn'), evSheet = $('#events-sheet'), evList = $('#events-list');
 let dockItems = [], dockSel = null;
 const TIER = { key: 'Key event', notable: 'Notable event', minor: 'Minor event' };
+const TIER_DEF = { key: 'changed the course of the whole story', notable: 'a turning point in a storyline', minor: 'a smaller moment worth knowing' };
 const itemKey = it => it.kind === 'ev' ? `ev:${it.num}` : `major:${it.i}`;
 function diamondSVG(size = 18) {   // the poster's major-event node: a gold square on its corner
   return `<svg class="u-diamond" viewBox="0 0 20 20" width="${size}" height="${size}" aria-hidden="true"><rect x="4.4" y="4.4" width="11.2" height="11.2" rx="1" transform="rotate(45 10 10)" class="u-dia"/></svg>`;
 }
 function glyphSVG(tier, num, veiled = false) {   // the footnote glyph, as in the poster's band
-  const G = 46, c = G / 2, inner = S.star_inner;
+  const G = S.fn_glyph, c = G / 2;
   if (veiled) return `<svg viewBox="0 0 ${G} ${G}"><circle cx="${c}" cy="${c}" r="${c - 8}" class="evm"/></svg>`;
-  const fs = tier === 'key' ? 13 : tier === 'minor' ? 14 : 15;
-  let shape;
-  if (tier === 'key') {
-    const pts = [];
-    for (let i = 0; i < 10; i++) { const an = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? c * inner : c; pts.push(`${(c + rr * Math.cos(an)).toFixed(1)},${(c + 1 + rr * Math.sin(an)).toFixed(1)}`); }
-    shape = `<polygon points="${pts.join(' ')}" class="evk"/><text x="${c}" y="${c + 2.5}" class="evnum" font-size="${fs}">${num}</text>`;
-  } else shape = `<circle cx="${c}" cy="${c}" r="${c - 6}" class="ev${tier[0]}"/><text x="${c}" y="${c}" class="evnum" font-size="${fs}">${num}</text>`;
-  return `<svg viewBox="0 0 ${G} ${G}" class="ev-${tier}">${shape}</svg>`;
+  const ev = evByNum[num], fs = ev && ev.fn ? ev.fn.gfs : S.fn_num_fs[tier];
+  return `<svg viewBox="0 0 ${G} ${G}" class="ev-${tier}">${fnGlyph(tier, num, fs, G, S.star_inner, S.fn_r)}</svg>`;
+}
+function tierGlyph(tier, size = 16) {   // a tier's mark without its number, filling a size-px box, with the poster's classes
+  const shape = tier === 'key' ? `<polygon points="${starPoints(10, 10.6, 9.6, S.star_inner)}" class="evk" style="stroke-width:1"/>`
+    : `<circle cx="10" cy="10" r="${tier === 'minor' ? 7.6 : 8.2}" class="ev${tier[0]}" style="stroke-width:${tier === 'minor' ? 2 : 1.4}"/>`;
+  return `<svg class="u-tg ev-${tier}" viewBox="0 0 20 20" width="${size}" height="${size}" aria-hidden="true">${shape}</svg>`;
 }
 function chipHTML(it) {
   if (it.kind === 'major') {
     const m = data.majors[it.i], veiled = sp().later(m.first);
-    return `<button class="u-chip major${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ''}>` +
+    return `<button class="u-chip major${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ` title="Major event" aria-label="Major event: ${esc(m.full)}"`}>` +
       `<span class="u-gl">${veiled ? glyphSVG('minor', 0, true) : diamondSVG(30)}</span><span class="u-txt">${veiled ? 'Not watched yet' : esc(m.full)}</span></button>`;
   }
   const ev = evByNum[it.num], veiled = sp().later(ev.first);
-  return `<button class="u-chip ${ev.tier}${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ''}>${glyphSVG(ev.tier, ev.num, veiled)}` +
+  return `<button class="u-chip ${ev.tier}${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ` title="${TIER[ev.tier]} #${ev.num}" aria-label="${TIER[ev.tier]} ${ev.num}: ${esc(ev.short)}"`}>${glyphSVG(ev.tier, ev.num, veiled)}` +
     `<span class="u-txt">${veiled ? 'Not watched yet' : esc(ev.short)}</span></button>`;
 }
 function buildDock() {
@@ -515,10 +578,13 @@ function highlight(kind, id) {
 function hitOf(el) { return el && el.closest ? el.closest('[data-hit]') : null; }
 function hover(e) {
   if (viewer.gesture || viewer.anim) return;
-  const h = hitOf(e.target);
-  const near = !h || h.dataset.hit === 'arc' ? nearMark(e.clientX, e.clientY) : null;
-  stage.classList.toggle('u-pointer', !!near);
+  let h = hitOf(e.target);
+  const open = !h || h.dataset.hit === 'arc';   // nothing under the pointer that outranks a mark or a major line's pad
+  const near = open ? nearMark(e.clientX, e.clientY) : null;
+  const mj = open && !near ? nearMajor(e.clientX, e.clientY) : null;
+  stage.classList.toggle('u-pointer', !!near || mj != null);
   if (near) { highlight('ev', near.num); hoverLabel(null); return; }
+  if (mj != null) { highlight('major', mj); hoverLabel(majorLabel(mj), e); return; }
   if (!h) { highlight(null); hoverLabel(null); return; }
   if (h.dataset.hit === 'arc') { highlight(null); hoverLabel(viewer.s < S.site_hover_label_scale ? data.arcs[h.dataset.arcHit].name : null, e); return; }
   if (h.dataset.hit === 'ep') {
@@ -526,7 +592,29 @@ function hover(e) {
     const ep = epById[h.dataset.id];
     hoverLabel(viewer.s < S.site_hover_label_scale ? `${epNo(ep.n)} · ${sp().later(ep.n) ? 'Unwatched' : ep.title}` : null, e);
   } else if (h.dataset.hit === 'ev') { highlight('ev', h.dataset.num); hoverLabel(null); }
-  else { highlight('major', +h.dataset.i); hoverLabel(viewer.s < S.site_hover_label_scale ? data.majors[+h.dataset.i].full : null, e); }
+  else {   // a major event's line or diamond names it at any zoom; its label box only when zoomed out, as a card does
+    const i = +h.dataset.i, box = h.classList.contains('mj-lbl');
+    highlight('major', i);
+    hoverLabel(!box ? majorLabel(i) : viewer.s < S.site_hover_label_scale ? data.majors[i].full : null, e);
+  }
+}
+const majorLabel = i => `◆ Major event · ${data.majors[i].full}`;
+function majorAt(i, e) {   // the popup's anchor on a major event's line: the diamond within a tap's reach, else the point on the line
+  const m = data.majors[i], py = viewer.toPoster(e.clientX, e.clientY)[1], R = S.site_tap_radius / viewer.s + S.node_half;
+  const node = m.node_ys.find(y => Math.abs(y - py) <= R);
+  if (node != null) return node;
+  const seg = m.segs.find(([a, b]) => py >= a - R && py <= b + R) || m.segs[0];
+  return Math.min(seg[1], Math.max(seg[0], py));
+}
+function nearMajor(cx, cy) {   // the watched major event whose line passes within site_major_pad screen px of a point
+  const [px, py] = viewer.toPoster(cx, cy), R = S.site_major_pad / viewer.s + S.event_w / 2, st = sp();
+  let best = null, bd = Infinity;
+  data.majors.forEach((m, i) => {
+    const dx = Math.abs(px - m.x);
+    if (dx > R || st.later(m.first)) return;
+    for (const [a, b] of m.segs) { const d = Math.hypot(dx, Math.max(0, a - py, py - b)); if (d <= R && d < bd) { bd = d; best = i; } }
+  });
+  return best;
 }
 stage.addEventListener('pointerleave', () => { highlight(null); hoverLabel(null); });
 function nearMark(cx, cy) {   // the nearest watched event mark within site_mark_hit screen px of a point
@@ -539,8 +627,9 @@ function nearMark(cx, cy) {   // the nearest watched event mark within site_mark
   }
   return best;
 }
+const hoverEl = $('#hover-label');
 function hoverLabel(text, e) {
-  const l = $('#hover-label');
+  const l = hoverEl;
   if (!text) { l.hidden = true; return; }
   l.textContent = text; l.hidden = false;
   l.style.transform = `translate(${e.clientX + 14}px,${e.clientY + 16}px)`;
@@ -552,8 +641,10 @@ function tap(target, e) {
   closeTransient();
   let hit = null;
   if (e.pointerType === 'mouse') {
-    const h = hitOf(target), near = !h || h.dataset.hit === 'arc' ? nearMark(e.clientX, e.clientY) : null;
+    const h = hitOf(target), open = !h || h.dataset.hit === 'arc', near = open ? nearMark(e.clientX, e.clientY) : null;
+    const mj = open && !near ? nearMajor(e.clientX, e.clientY) : null;
     if (near) hit = { kind: 'ev', num: near.num, mark: near };
+    else if (mj != null) hit = { kind: 'major', i: mj, at: majorAt(mj, e) };
     else if (h) hit = hitFromEl(h, e);
   } else hit = nearestHit(e.clientX, e.clientY);
   if (!hit) { closePop(); unfocusArc(); return false; }
@@ -564,7 +655,7 @@ function tap(target, e) {
 function hitFromEl(h, e) {
   if (h.dataset.hit === 'arc') return { kind: 'arc', arc: h.dataset.arcHit };
   if (h.dataset.hit === 'ep') return { kind: 'ep', id: h.dataset.id };
-  if (h.dataset.hit === 'major') return { kind: 'major', i: +h.dataset.i };
+  if (h.dataset.hit === 'major') return { kind: 'major', i: +h.dataset.i, at: h.classList.contains('mj-lbl') ? null : majorAt(+h.dataset.i, e) };
   const num = +h.dataset.num, [px, py] = viewer.toPoster(e.clientX, e.clientY);
   const mark = data.marks.filter(m => m.num === num).sort((a, b) => Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py))[0];
   return { kind: 'ev', num, mark };
@@ -582,10 +673,15 @@ function nearestHit(cx, cy) {
     if (st.later(m.first)) return;
     for (const y of m.node_ys) {   // the diamond: |dx| + |dy| <= its half-diagonal
       const d = Math.max(0, (Math.abs(px - m.x) + Math.abs(py - y) - S.event_node * Math.SQRT1_2) * Math.SQRT1_2);
-      if (d <= R) cands.push({ d, pr: 1, hit: { kind: 'major', i } });
+      if (d <= R) cands.push({ d, pr: 1, hit: { kind: 'major', i, at: y } });
     }
     const d = rectDist(px, py, m.lo, m.y - m.h / 2, m.lo + m.w, m.y + m.h / 2);
     if (d <= R) cands.push({ d, pr: 1, hit: { kind: 'major', i } });
+    const RL = S.site_major_pad / s + S.event_w / 2;   // the line: within its pad
+    for (const [a, b] of m.segs) {
+      const dl = Math.hypot(Math.abs(px - m.x), Math.max(0, a - py, py - b));
+      if (dl <= RL) cands.push({ d: dl, pr: 3.5, hit: { kind: 'major', i, at: Math.min(b, Math.max(a, py)) } });
+    }
   });
   for (const e of data.episodes) {
     if (hiddenN(e.n)) continue;
@@ -614,7 +710,21 @@ const arcColor = id => (id && (settings.arcColors[id] || theme.arcs[id])) || the
 function anchorBox(st) {   // poster px
   if (st.kind === 'ep') { const e = epById[st.id]; return [e.L, e.top, e.L + S.card_w, e.top + e.h]; }
   if (st.kind === 'ev') { const m = st.mark; return [m.x - m.r, m.y - m.r, m.x + m.r, m.y + m.r]; }
-  const m = data.majors[st.i]; return [m.lo, m.y - m.h / 2, m.lo + m.w, m.y + m.h / 2];
+  const m = data.majors[st.i];
+  if (st.at != null) { const h = S.node_half; return [m.x - h, st.at - h, m.x + h, st.at + h]; }   // where the line or a diamond was clicked
+  if (st.tag) {   // opened from its edge tag: the line where the tag row crosses it
+    const t = tagRow(), y0 = (t - viewer.ty) / viewer.s, y1 = (t + TAG_H - viewer.ty) / viewer.s;
+    return [m.x - 2, y0, m.x + 2, y1];
+  }
+  return [m.lo, m.y - m.h / 2, m.lo + m.w, m.y + m.h / 2];
+}
+function screenBox(st) {   // the anchor on screen: a rail face for a protagonist card, else the poster anchor
+  if (st.kind === 'line') {
+    const r = railPos[st.p], x0 = land ? safe.l : 0, w = land ? S.site_rail_w_land : phone ? S.site_rail_w_phone : S.site_rail_w;
+    return r && railOn && !r.chip ? [x0, r.y, x0 + w, r.y + railFaceH] : null;
+  }
+  const b = anchorBox(st), [x0, y0] = viewer.toScreen(b[0], b[1]), [x1, y1] = viewer.toScreen(b[2], b[3]);
+  return [x0, y0, x1, y1];
 }
 
 function openPop(hit, { glide = false, nav = false, fly = false, instant = false } = {}) {
@@ -622,11 +732,13 @@ function openPop(hit, { glide = false, nav = false, fly = false, instant = false
   endZoomEdit(false);
   if (hit.kind === 'ev' && !hit.mark) hit.mark = data.marks.find(m => m.num === hit.num);
   popState = { ...hit, s0: viewer.s, holdUntil: 0 };
-  pop.innerHTML = (hit.kind === 'ep' ? epHTML(epById[hit.id]) : hit.kind === 'ev' ? evHTML(evByNum[hit.num]) : majorHTML(data.majors[hit.i])) +
+  pop.innerHTML = (hit.kind === 'ep' ? epHTML(epById[hit.id]) : hit.kind === 'ev' ? evHTML(evByNum[hit.num]) : hit.kind === 'line' ? lineHTML(hit.p) : majorHTML(data.majors[hit.i])) +
     '<button class="u-popx" aria-label="Close">×</button><div class="u-arrow"></div>';
   pop.hidden = false; body.classList.add('u-popopen');
+  pop.classList.toggle('u-linepop', hit.kind === 'line');
   popClass();
   popState.w = pop.offsetWidth; popState.h = pop.offsetHeight;
+  if (hit.kind === 'line') { highlight(null); unselectInDock(); flashLine(hit.p); placePop(); return; }   // no deep link of its own
   highlight(hit.kind, hit.kind === 'ep' ? hit.id : hit.kind === 'ev' ? hit.num : hit.i);
   if (hit.kind === 'ev') pulse(hit.num);
   if (hit.kind === 'ep') unselectInDock(); else selectInDock(itemKey(hit));
@@ -649,7 +761,7 @@ function relayoutPop() {   // after a rotation: the popup's new form, its anchor
   const st = popState;
   popClass();
   st.w = pop.offsetWidth; st.h = pop.offsetHeight; st.s0 = viewer.s;
-  glideTo(st, false, true);
+  if (st.kind !== 'line' && !st.tag) glideTo(st, false, true);
   placePop();
 }
 function flyTo(st, instant) {   // search results and deep links: centred at site_search_scale (site_search_scale_land)
@@ -678,8 +790,10 @@ function glideTo(st, nav, whole = false) {   // bring the anchor (whole: all of 
 
 function placePop() {
   const st = popState; if (!st) return;
-  const b = anchorBox(st), [x0, y0] = viewer.toScreen(b[0], b[1]), [x1, y1] = viewer.toScreen(b[2], b[3]);
-  const vw = innerWidth, vh = innerHeight, held = performance.now() < st.holdUntil;
+  const sb = screenBox(st);
+  if (!sb) return closePop(false, true);   // a protagonist card whose face left the rail
+  const [x0, y0, x1, y1] = sb;
+  const vw = innerWidth, vh = innerHeight, held = performance.now() < st.holdUntil || st.kind === 'line';
   if (!held) {
     const z = viewer.s / st.s0;
     if (x1 < 0 || x0 > vw || y1 < 0 || y0 > vh || z > S.site_popup_close_zoom || z < 1 / S.site_popup_close_zoom) return closePop(false, true);
@@ -746,6 +860,24 @@ function epHTML(ep) {
     (ep.summary ? `<p>${esc(ep.summary)}</p>` : '<p class="u-muted">No summary yet.</p>') +
     (yt ? `<a class="u-watch" href="${yt}" target="_blank" rel="noopener">▶ Watch on YouTube</a>` : '') + navHTML(st);
 }
+function lineHTML(p) {   // a protagonist's card: their episodes, their arcs (each focuses it), and where to go on their line
+  const st = sp(), eps = lineEps[p].filter(e => !st.later(e.n)), ns = eps.map(e => e.n);
+  const meta = eps.length ? `${eps.length} ${st.N != null ? 'watched ' : ''}episode${eps.length === 1 ? '' : 's'} · ${epNo(Math.min(...ns))}–${epNo(Math.max(...ns))}` : 'Nothing watched yet';
+  const seen = new Set(), arcs = data.brackets.filter(b => b.p === p && b.members.some(([n]) => !st.later(n))).sort((a, b) => a.lo - b.lo)
+    .filter(b => !seen.has(b.arc) && seen.add(b.arc)).map(b => arcRowHTML(b.arc, true)).join('');
+  const dis = eps.length ? '' : ' disabled';
+  return `<div class="u-pophead u-linehead"><img src="${CONFIG.faces}${esc(p)}.png" alt="" width="32" height="32"><div><strong class="u-pname">${esc(p)}</strong>` +
+    `<div class="u-popmeta">${meta}</div></div></div>` +
+    (arcs ? `<div class="u-lgh">Arcs on this line</div><div class="u-linearcs">${arcs}</div>` : '') +
+    `<div class="u-linebtns"><button data-line="first"${dis}>Start of the line</button><button data-line="last"${dis}>Latest</button>` +
+    `<button data-line="focus" class="u-wide"${dis}>${focusLineP === p ? 'Show every line' : 'Focus line'}</button></div>`;
+}
+function lineGo(p, which) {
+  const eps = lineEps[p].filter(e => !sp().later(e.n));
+  if (which === 'focus') { closePop(); return focusLine(p); }
+  const e = which === 'first' ? eps[0] : eps[eps.length - 1];
+  if (e) openPop({ kind: 'ep', id: e.id }, { fly: true });
+}
 function epList(ids) {
   const s = sp();
   return ids.map(i => epById[i]).filter(Boolean).sort((a, b) => a.n - b.n).map(ep => s.later(ep.n)
@@ -754,7 +886,8 @@ function epList(ids) {
 }
 function evHTML(ev) {
   return `<div class="u-pophead"><span class="u-badge tier-${ev.tier}">#${ev.num}</span><strong>${esc(ev.name)}</strong></div>` +
-    `<div class="u-popmeta">${TIER[ev.tier]} · ${ev.protags.map(esc).join(', ')}</div>` +
+    `<div class="u-popmeta u-tier">${tierGlyph(ev.tier)}<span><strong>${TIER[ev.tier]}</strong>: ${TIER_DEF[ev.tier]}</span></div>` +
+    `<div class="u-popmeta">${ev.protags.map(esc).join(', ')}</div>` +
     `<p>${esc(ev.desc || ev.short)}</p><ul class="u-eps">${epList(ev.episodes)}</ul>` + navHTML({ kind: 'ev', num: ev.num });
 }
 function majorHTML(ev) {
@@ -770,6 +903,8 @@ pop.addEventListener('click', e => {
   if (nav) return navStep(+nav.dataset.nav);
   const go = e.target.closest('[data-go]');
   if (go) return openPop({ kind: 'ep', id: go.dataset.go }, { nav: true });
+  const ln = e.target.closest('[data-line]');
+  if (ln && popState && popState.kind === 'line') return lineGo(popState.p, ln.dataset.line);
   const arc = e.target.closest('[data-arc]');
   if (arc) { const a = arc.dataset.arc; closePop(); focusArc(a); }
 });
@@ -793,11 +928,28 @@ $('#b-search2').addEventListener('click', openSearch);
 $('#search').addEventListener('click', e => { if (e.target.id === 'search') search.close(); });
 
 // ---------------------------------------------------------------- arc focus: dim everything else, fly to its brackets
-let focusArcId = null;
+let focusArcId = null, focusLineP = null;
 function focusArc(arc, fly = true) {
   if (focusArcId === arc && fly) return unfocusArc();
-  focusArcId = arc;
+  focusArcId = arc; focusLineP = null;
   applyFocus(arc, fly);
+}
+function focusLine(p) {   // everything not on p's line dims; the camera stays
+  if (focusLineP === p) return unfocusArc();
+  focusArcId = null; focusLineP = p;
+  applyLineFocus(p);
+}
+function applyLineFocus(p) {
+  for (const el of idx.dim) {
+    const d = el.dataset;
+    const inF = d.pl != null ? d.pl === p : d.p != null ? d.p === p : d.ep ? epById[d.ep].creator === p
+      : d.mjl != null ? data.majors[+d.mjl].protags.includes(p) : false;
+    el.classList.toggle('in-focus', inF);
+  }
+  host.firstElementChild.classList.add('focusing');
+  const chip = $('#focus-chip');
+  chip.textContent = `✕ ${p}'s line`; chip.hidden = false; tagBlock = null;
+  $$('.u-lgarc').forEach(b => b.classList.remove('on'));
 }
 function applyFocus(arc, fly) {
   const svg = host.firstElementChild;
@@ -807,12 +959,12 @@ function applyFocus(arc, fly) {
   const evs = new Set(data.events.filter(ev => ev.episodes.some(i => members.has(i))).map(ev => ev.num));
   for (const el of idx.dim) {
     const d = el.dataset;
-    const inF = d.arc === arc || (d.ep && members.has(d.ep)) || (d.num && evs.has(+d.num)) || (d.stem && evs.has(+d.stem));
+    const inF = d.pl != null || d.arc === arc || (d.ep && members.has(d.ep)) || (d.num && evs.has(+d.num)) || (d.stem && evs.has(+d.stem));
     el.classList.toggle('in-focus', !!inF);
   }
   svg.classList.add('focusing');
   const chip = $('#focus-chip');
-  chip.textContent = `✕ ${data.arcs[arc].name}`; chip.hidden = false;
+  chip.textContent = `✕ ${data.arcs[arc].name}`; chip.hidden = false; tagBlock = null;
   $$('.u-lgarc').forEach(b => b.classList.toggle('on', b.dataset.arc === arc));
   if (!fly) return;
   const eps = [...members].map(i => epById[i]);
@@ -820,29 +972,47 @@ function applyFocus(arc, fly) {
   const y0 = Math.min(...brs.map(b => b.y - b.h), ...eps.map(e => e.top)), y1 = Math.max(...brs.map(b => b.y + b.h), ...eps.map(e => e.top + e.h));
   viewer.focusBox(x0, y0, x1, y1, 0.9);
 }
-function unfocusArc() {
-  focusArcId = null;
+function unfocusArc() {   // clears an arc's or a line's focus
+  focusArcId = null; focusLineP = null;
   const svg = host.firstElementChild;
   if (svg) svg.classList.remove('focusing');
-  $('#focus-chip').hidden = true;
+  $('#focus-chip').hidden = true; tagBlock = null;
   $$('.u-lgarc').forEach(b => b.classList.remove('on'));
 }
 $('#focus-chip').addEventListener('click', unfocusArc);
 
 // ---------------------------------------------------------------- legend: the ? panel
+// The poster's legend rows (data.legend.rows: [svg, text, key]) in groups, events first. The intro's two sentences go to
+// the groups they describe, and the site has its own note on where the events are listed (the poster's is the band).
+const LEGEND_GROUPS = [['Events', ['key', 'notable', 'minor', 'note']], ['Major events', ['major']],
+  ['Episodes and cards', ['intro:1', 'ep', 'hollow', 'beam', 'beam_est', 'grey']], ['Time', ['intro:0', 'ticks', 'gap', 'absent']]];
 function buildLegend() {
-  const lg = data.legend;
-  $('#lg-rows').innerHTML = `<p class="u-lgintro">${esc(lg.intro)}</p>` + lg.rows.map(([svg, text]) => svg == null
-    ? `<p class="u-lgnote">${esc(text)}</p>` : `<div class="u-lgrow">${svg}<span>${esc(text)}</span></div>`).join('');
+  const lg = data.legend, rows = new Map(lg.rows.map(([svg, text, key]) => [key, [svg, text]]));
+  const intro = lg.intro.split(/(?<=\.)\s+/);
+  const note = `Every numbered event is listed under <strong>Events</strong> ${land ? 'in the buttons on the right' : 'at the bottom of the screen'}. ` +
+    'Where a line is crowded, a mark sits just above or below it on a short stem.';
+  const used = new Set(LEGEND_GROUPS.flatMap(g => g[1]));
+  const row = k => {
+    if (k.startsWith('intro:')) { const t = intro[+k.slice(6)]; return t ? `<p class="u-lgintro">${esc(t)}</p>` : ''; }
+    if (k === 'note') return `<p class="u-lgnote">${note}</p>`;
+    const r = rows.get(k);
+    return !r ? '' : r[0] == null ? `<p class="u-lgnote">${esc(r[1])}</p>` : `<div class="u-lgrow">${r[0]}<span>${esc(r[1])}</span></div>`;
+  };
+  $('#lg-rows').innerHTML = LEGEND_GROUPS.map(([h, keys]) => `<div class="u-lgh">${h}</div>` + keys.map(row).join('')).join('') +
+    [...rows.keys()].filter(k => !used.has(k)).map(row).join('');   // a row the site doesn't know yet still shows
+  $('#b-legend .u-keygl').innerHTML = tierGlyph('key', 14) + tierGlyph('notable', 14) + diamondSVG(14);
   fillLegendArcs();
+}
+function arcRowHTML(a, inview = false) {   // an arc as a coloured bracket and its name; a click focuses it
+  const col = `var(--a-${a})`;
+  return `<button class="u-lgarc${a === focusArcId ? ' on' : ''}${inview ? ' inview' : ''}" data-arc="${a}" style="color:${col}"><svg viewBox="0 0 120 30"><g style="stroke:${col}" stroke-width="8">` +
+    `<line x1="4" y1="15" x2="116" y2="15"/><line x1="4" y1="3" x2="4" y2="27"/><line x1="116" y1="3" x2="116" y2="27"/></g></svg>${esc(data.arcs[a].short.toUpperCase())}</button>`;
 }
 function fillLegendArcs() {
   const visible = new Set(data.brackets.filter(b => b.members.some(([n]) => !hiddenN(n))).map(b => b.arc));
-  $('#lg-arclist').innerHTML = [...data.legend.arcs, ...data.legend.sagas].filter(a => visible.has(a)).map(a => {
-    const col = `var(--a-${a})`;
-    return `<button class="u-lgarc${a === focusArcId ? ' on' : ''}" data-arc="${a}" style="color:${col}"><svg viewBox="0 0 120 30"><g style="stroke:${col}" stroke-width="8">` +
-      `<line x1="4" y1="15" x2="116" y2="15"/><line x1="4" y1="3" x2="4" y2="27"/><line x1="116" y1="3" x2="116" y2="27"/></g></svg>${esc(data.arcs[a].short.toUpperCase())}</button>`;
-  }).join('');
+  const arcs = [...data.legend.arcs, ...data.legend.sagas].filter(a => visible.has(a));
+  $('#lg-arclist').innerHTML = arcs.map(a => arcRowHTML(a)).join('');
+  $('#lg-arcn').textContent = `(${arcs.length})`;
   if (viewer) updateLegendInView(viewer.view());
 }
 $('#lg-arclist').addEventListener('click', e => {
@@ -852,7 +1022,97 @@ $('#lg-arclist').addEventListener('click', e => {
 });
 function updateLegendInView(v) {
   const inView = new Set(data.brackets.filter(b => b.hi > v.x0 && b.lo < v.x1 && b.y > v.y0 && b.y < v.y1).map(b => b.arc));
-  for (const b of $$('.u-lgarc')) b.classList.toggle('inview', inView.has(b.dataset.arc));
+  for (const b of $$('#lg-arclist .u-lgarc')) b.classList.toggle('inview', inView.has(b.dataset.arc));
+}
+
+// ---------------------------------------------------------------- major events' edge tags
+// A major event's name is only in its label at the top of the poster. When its line is in view and that label isn't, a
+// fixed-size tag at the top of the poster area names it, at the line's x; a click opens its popup. Never scaled.
+const TAG_H = 22, TAG_MAX_W = 180, tagBox = $('#mjtags');
+let tagEls = [], tagW = [], tagBlock = null;
+const tagRow = () => viewer.area().y0 + 6;
+function buildMajorTags() {
+  const font = `9px '${theme.fonts.pixel.family}'`;
+  tagBox.innerHTML = data.majors.map((m, i) => {
+    const name = m.name.toUpperCase(), txt = textWidth(name, font) > TAG_MAX_W ? m.lines[0] : name;
+    return `<button class="u-mjtag" data-i="${i}" aria-label="Major event: ${esc(m.full)}">${diamondSVG(10)}<span>${esc(txt)}</span><span class="u-up" aria-hidden="true">▲</span></button>`;
+  }).join('');
+  tagEls = [...tagBox.children];
+  tagW = tagEls.map(el => el.offsetWidth);   // measured once, shown
+  for (const el of tagEls) el.hidden = true;
+}
+function tagBlockers() {   // fixed controls the tag row can run into (the focus chip on a phone); cached until one changes
+  if (!tagBlock) tagBlock = $$('#focus-chip, #bar > :not(.u-grow)').filter(el => el.offsetParent !== null).map(el => el.getBoundingClientRect());
+  return tagBlock;
+}
+function updateMajorTags(v) {
+  if (!tagEls.length) return;
+  const a = viewer.area(), y = tagRow(), st = sp();
+  const railR = railOn ? (land ? safe.l + S.site_rail_w_land : phone ? S.site_rail_w_phone : S.site_rail_w) : a.x0;
+  const lo = Math.max(a.x0, railR), hi = a.x1, py0 = (a.y0 - v.ty) / v.s, py1 = (a.y1 - v.ty) / v.s;
+  let lastR = -Infinity;
+  for (const { i } of majorsByX) {
+    const m = data.majors[i], el = tagEls[i], w = tagW[i], sx = v.tx + m.x * v.s;
+    let show = !st.later(m.first) && v.ty + (m.y + m.h / 2) * v.s < a.y0 && sx >= lo + 40 && sx <= hi - 40 &&
+      m.segs.some(([s0, s1]) => s1 >= py0 && s0 <= py1);
+    const left = Math.min(hi - 4 - w, Math.max(lo + 4, sx - w / 2));
+    if (show && (left < lastR + 6 || tagBlockers().some(r => r.left < left + w && r.right > left && r.top < y + TAG_H && r.bottom > y))) show = false;
+    if (show) { lastR = left + w; el.style.transform = `translate(${left.toFixed(1)}px,${y.toFixed(1)}px)`; }
+    if (el.hidden === show) el.hidden = !show;
+  }
+}
+tagBox.addEventListener('click', e => {
+  const t = e.target.closest('.u-mjtag'); if (!t) return;
+  const i = +t.dataset.i;
+  closeTransient();
+  if (popState && popState.kind === 'major' && popState.i === i && popState.tag) return closePop();
+  openPop({ kind: 'major', i, tag: true });
+});
+tagBox.addEventListener('pointerover', e => { const t = e.target.closest('.u-mjtag'); if (t && e.pointerType === 'mouse') highlight('major', +t.dataset.i); });
+tagBox.addEventListener('pointerout', e => { if (e.pointerType === 'mouse' && !popState) highlight(null); });
+
+// ---------------------------------------------------------------- the one-time hint on the Key button
+// The first time (in this browser) the camera settles zoomed in far enough for the marks to read, the Key button pulses
+// and a one-line callout asks what they mean. It goes after 8 s, on any other tap, or when the key opens; never again.
+const HINT_KEY = 'seenKeyHint', keyBtn = $('#b-legend'), keyHint = $('#key-hint');
+let hintArmed = true, hintTimer = null, hintEnd = null;
+function hintSeen() { try { return localStorage.getItem(HINT_KEY) === '1'; } catch { return false; } }
+function markHintSeen() { hintArmed = false; try { localStorage.setItem(HINT_KEY, '1'); } catch { /* private mode: once per visit */ } }
+function maybeKeyHint(v) {
+  if (!hintArmed || v.s < S.site_key_hint_scale) return;
+  hintArmed = false;
+  if (hintSeen()) return;
+  hintTimer = setTimeout(showKeyHint, 600);
+}
+function showKeyHint() {
+  if (!body.classList.contains('ready') || !$('#search').hidden) { hintArmed = true; return; }   // not now: the next settle
+  markHintSeen();
+  if (!$('#legend').hidden) return;
+  keyHint.hidden = false; placeKeyHint();
+  keyBtn.classList.add('u-hinting');
+  requestAnimationFrame(() => requestAnimationFrame(() => keyHint.classList.add('on')));
+  hintEnd = setTimeout(endKeyHint, 8000);
+  document.addEventListener('pointerdown', hintOutside, true);
+}
+function hintOutside(e) { if (!e.target.closest('#key-hint, #b-legend')) endKeyHint(); }
+function endKeyHint() {
+  clearTimeout(hintTimer); clearTimeout(hintEnd);
+  document.removeEventListener('pointerdown', hintOutside, true);
+  keyBtn.classList.remove('u-hinting');
+  if (keyHint.hidden) return;
+  keyHint.classList.remove('on');
+  setTimeout(() => { keyHint.hidden = true; }, 400);
+}
+function placeKeyHint() {   // beside the pill: right of it on desktop, above it on a phone, left of it in landscape
+  if (keyHint.hidden) return;
+  const r = keyBtn.getBoundingClientRect(), side = land ? 'left' : phone ? 'above' : 'right';
+  keyHint.dataset.side = side;
+  const st = keyHint.style;
+  st.left = side === 'right' ? `${r.right + 12}px` : side === 'above' ? `${r.left}px` : 'auto';
+  st.right = side === 'left' ? `${innerWidth - r.left + 12}px` : 'auto';
+  st.top = side === 'above' ? 'auto' : `${r.top + r.height / 2}px`;
+  st.bottom = side === 'above' ? `${innerHeight - r.top + 12}px` : 'auto';
+  st.setProperty('--arrow-x', `${r.width / 2}px`);
 }
 
 // ---------------------------------------------------------------- dialogs, menu, toolbar
@@ -865,6 +1125,7 @@ function openPanel(id) {
   p.hidden = false;
   if (id === 'spoilers') scrollStripToSelection();
   if (id === 'export') fillExport();
+  if (id === 'legend') { endKeyHint(); markHintSeen(); }
   const f = p.querySelector('input:not([hidden]), button:not(.u-close), summary');
   if (f && !phone) f.focus({ preventScroll: true });
 }
@@ -888,7 +1149,7 @@ addEventListener('keydown', e => {
     if (popState) closePop();
     else if (!evSheet.hidden) closeSheet();
     else if ($$('.u-dlg').some(p => !p.hidden)) closeDialogs();
-    else if (focusArcId) unfocusArc();
+    else if (focusArcId || focusLineP) unfocusArc();
     return;
   }
   if (popState && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); return navStep(e.key === 'ArrowLeft' ? -1 : 1); }
@@ -1077,6 +1338,6 @@ export async function exportPNG(scale, transparent, progress = () => {}) {
   } finally { URL.revokeObjectURL(url); }
 }
 window.__exportPNG = (s, t) => exportPNG(s, t);
-window.__app = () => ({ data, settings, viewer, draw, saveSettings, openPop, closePop, focusArc, unfocusArc, nearestHit, highlight, search, zoomPct, fitScale, popState });
+window.__app = () => ({ data, settings, viewer, draw, saveSettings, openPop, closePop, focusArc, unfocusArc, focusLine, nearestHit, nearMajor, highlight, search, zoomPct, fitScale, popState, showKeyHint });
 
 start().catch(err => { $('#load-text').textContent = 'Could not load the timeline: ' + err.message; console.error(err); });

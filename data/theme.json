@@ -80,6 +80,8 @@
   "deep": "#0b0c22",
   "minor_edge": "rgba(167,175,211,.5)",
   "minor_num": "rgba(190,197,230,.62)",
+  "notable_disc_num": "#0b0c22",
+  "minor_ring": "rgba(167,175,211,.8)",
   "dim_soft": "rgba(167,175,211,.7)",
   "band_top": "#05061a",
   "band_mid": "#04050f",

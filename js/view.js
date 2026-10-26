@@ -6,6 +6,7 @@
 
 export class Viewer {
   // opts: {maxScale, insets() -> {top, bottom, left?, right?}, fitHeight() -> bool, homeScale() -> scale or null,
+  //        onTransform(viewer): called with each new transform, for what must move in step with the poster,
   //        rubberMax, rubberK, rubberMs, onChange(view), onSettle(view), onTap(target, event), onHover(event), onGestureStart()}
   constructor(stage, content, W, H, opts) {
     Object.assign(this, { stage, content, W, H, opts });
@@ -69,6 +70,7 @@ export class Viewer {
     }
     this.s = s; this.tx = tx; this.ty = ty;
     this.content.style.transform = `translate(${tx}px,${ty}px) scale(${s})`;
+    this.opts.onTransform && this.opts.onTransform(this);   // in step with the transform, not a frame later
     this.moving();
     this.queueFrame();
     if (settle) this.scheduleSettle();

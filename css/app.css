@@ -25,6 +25,9 @@ body.phone .u-desk, body:not(.phone) .u-phone { display: none !important; }
 #bgimg { position: absolute; inset: 0; background-size: cover; background-position: center; pointer-events: none; }
 #bgimg::after { content: ''; position: absolute; inset: 0; background: #070816; opacity: var(--bg-dim, .45); }
 #poster { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+/* the poster's nebulae and background stars, under it: paintNebulae and paintStars in app.js */
+#nebula { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; will-change: transform; max-width: none; }
+#pstars { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
 #poster svg { display: block; }
 #stage.u-pointer { cursor: pointer; }
 
@@ -70,7 +73,34 @@ body:not(.phone) #bar { left: calc(10px + var(--rail-shift, 0px)); transition: l
 #eye-chip { position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 11px;
   color: var(--ui-spoiler); background: var(--ui-pane); border-radius: 999px; padding: 1px 7px; pointer-events: none; }
 .u-fab { position: fixed; z-index: 5; }
-#b-legend { left: calc(10px + var(--rail-shift, 0px)); bottom: calc(var(--fab-bottom, 10px) + var(--safe-b)); transition: left .15s; }
+#b-legend { left: calc(10px + var(--rail-shift, 0px)); bottom: calc(var(--fab-bottom, 10px) + var(--safe-b)); transition: left .15s;
+  display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 12px; font-size: 14px; font-weight: 500; }
+body.phone #b-legend { padding: 0 16px 0 14px; font-size: 15px; left: 10px; }   /* over the rail's foot: shifted, it would run into the Events pill */
+.u-keygl { display: inline-flex; align-items: center; gap: 3px; }
+.u-keygl svg { width: 14px; height: 14px; display: block; }
+/* the one-time hint: a gold ring pulsing twice on the Key button, and a callout beside it (app.js placeKeyHint) */
+#b-legend.u-hinting { border-color: var(--c-event); box-shadow: 0 0 0 2px var(--c-event); animation: u-keypulse .7s ease-out 2; }
+@keyframes u-keypulse { from { box-shadow: 0 0 0 2px var(--c-event), 0 0 0 2px rgba(255, 215, 106, .75); }
+  to { box-shadow: 0 0 0 2px var(--c-event), 0 0 0 14px rgba(255, 215, 106, 0); } }
+#key-hint { position: fixed; z-index: 6; transform: translateY(-50%); opacity: 0; transition: opacity .4s; }
+#key-hint.on { opacity: 1; }
+#key-hint[data-side=above] { transform: none; }
+#key-hint button { display: block; height: auto; padding: 8px; font: 13px/1.35 var(--txt); text-align: left; background: var(--ui-panel); border: 1px solid var(--c-event);
+  border-radius: 8px; max-width: min(330px, calc(100vw - 24px)); box-shadow: 0 6px 24px rgba(0, 0, 0, .5); backdrop-filter: none; }
+#key-hint button span { color: var(--c-event); font-weight: 700; }
+#key-hint::before { content: ''; position: absolute; width: 10px; height: 10px; background: var(--ui-panel); border: 1px solid var(--c-event); transform: rotate(45deg); }
+#key-hint[data-side=right]::before { left: -5px; top: calc(50% - 5px); border-right: none; border-top: none; }
+#key-hint[data-side=left]::before { right: -5px; top: calc(50% - 5px); border-left: none; border-bottom: none; }
+#key-hint[data-side=above]::before { left: calc(var(--arrow-x, 20px) - 5px); bottom: -5px; border-left: none; border-top: none; }
+/* major events' edge tags (app.js updateMajorTags): fixed size, at the top of the poster area */
+#mjtags { position: fixed; left: 0; top: 0; z-index: 4; pointer-events: none; }
+.u-mjtag { position: absolute; left: 0; top: 0; height: 22px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  font: 9px/1 var(--pix); letter-spacing: .5px; color: var(--c-event); background: var(--c-label_knockout); border: 1px solid var(--c-event); border-radius: 999px;
+  backdrop-filter: none; -webkit-backdrop-filter: none; pointer-events: auto; will-change: transform; }
+.u-mjtag::before { content: ''; position: absolute; inset: -8px -4px; }   /* a bigger target for a finger */
+.u-mjtag:hover { border-color: var(--c-bright); color: var(--c-bright); }
+.u-mjtag svg { width: 10px; height: 10px; }
+.u-mjtag .u-up { font-size: 7px; }
 #b-fit2 { right: 10px; bottom: calc(var(--fab-bottom, 10px) + var(--safe-b)); }
 #focus-chip { position: fixed; z-index: 5; top: calc(10px + var(--safe-t) + var(--sz-btn) + 8px); left: 50%; transform: translateX(-50%); }
 body:not(.phone) #focus-chip { top: calc(10px + var(--safe-t)); }
@@ -184,10 +214,13 @@ details[open] > summary::before { content: '▾'; }
 #legend { left: calc(10px + var(--rail-shift, 0px)); right: auto; top: auto; bottom: calc(var(--fab-bottom, 10px) + var(--sz-btn) + 8px + var(--safe-b));
   width: min(var(--sz-legend), calc(100vw - 20px)); max-height: 70dvh; }
 #legend summary.u-h { margin: 10px 0; }
+#lg-arcn { color: var(--ui-dim); }
+.u-lgh { font: 9px/1.4 var(--pix); color: var(--ui-dim); letter-spacing: 1px; text-transform: uppercase; margin: 16px 0 4px; }
+#lg-rows .u-lgh:first-child { margin-top: 4px; }
 .u-lgrow { display: flex; gap: 10px; align-items: center; font-size: 13px; margin: 8px 0; color: var(--ui-dim); }
 .u-lgrow svg { flex: none; width: 60px; height: auto; }
 .u-lgnote { font-size: 13px; color: var(--ui-dim); margin: 6px 0 10px 70px; }
-.u-lgintro { font-size: 13px; color: var(--ui-dim); }
+.u-lgintro { font-size: 13px; color: var(--ui-dim); margin: 6px 0; }
 .u-lgarc { display: flex; gap: 10px; align-items: center; width: 100%; height: 34px; padding: 0 6px; border: none; background: none; backdrop-filter: none;
   font: 9px/1.2 var(--pix); text-align: left; border-radius: 6px; opacity: .5; }
 .u-lgarc.inview { opacity: 1; }
@@ -211,6 +244,25 @@ details[open] > summary::before { content: '▾'; }
 .u-badge.tier-major { background: #ffd76a; }
 .u-popmeta { color: var(--ui-dim); font-size: 13px; margin: 6px 0 4px; }
 .u-popmeta .u-link { font-size: 13px; text-decoration: underline dotted; }
+.u-tier { display: flex; align-items: flex-start; gap: 7px; }
+.u-tier .u-tg { flex: none; margin-top: 1px; }
+.u-tier strong { color: var(--ui-ink); font-weight: 600; }
+/* a protagonist's card, from their face in the rail */
+#pop.u-linepop { width: min(300px, calc(100vw - 16px)); }
+.u-linehead { align-items: center; }
+.u-linehead img { flex: none; width: 32px; height: 32px; image-rendering: pixelated; border: 2px solid var(--ui-ink); background: #070816; }
+.u-linehead .u-pname { font: 11px/1.4 var(--pix); letter-spacing: .5px; }
+.u-linehead .u-popmeta { margin: 3px 0 0; }
+.u-linearcs .u-lgarc { opacity: 1; height: 30px; }
+.u-linebtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ui-line); }
+.u-linebtns button { height: 36px; font-size: 13px; padding: 0 8px; backdrop-filter: none; }
+.u-linebtns button:disabled { opacity: .35; cursor: default; }
+.u-linebtns .u-wide { grid-column: 1 / -1; }
+body.phone .u-linebtns button { height: 44px; }
+body.land .u-linebtns { grid-template-columns: 1fr 1fr 1fr; }   /* one row, so the card fits the side panel's height */
+body.land .u-linebtns .u-wide { grid-column: auto; }
+body.land .u-linebtns button { height: auto; min-height: 44px; line-height: 1.2; padding: 4px 6px; }
+body.land .u-linearcs .u-lgarc { height: 26px; }
 #pop p { margin: 8px 0; }
 .u-muted { color: var(--ui-dim); font-style: italic; }
 #pop a { color: var(--ui-accent); text-decoration: none; }
@@ -284,8 +336,11 @@ body.land #bar { top: var(--side-top); right: var(--col-r); left: auto; flex-dir
 body.land #bar .u-grow { display: none; }
 body.land .u-fab, body.land #dock-btn { left: auto; right: var(--col-r); transform: none; }
 body.land #b-fit2 { right: var(--col-r); bottom: var(--side-bot); }
-body.land #b-legend { left: auto; right: var(--col-r); bottom: calc(var(--side-bot) + var(--sz-btn) + 6px); }
-body.land #dock-btn { bottom: calc(var(--side-bot) + 2 * (var(--sz-btn) + 6px)); width: var(--sz-btn); height: 84px; padding: 10px 0;
+body.land #b-legend { left: auto; right: var(--col-r); bottom: calc(var(--side-bot) + var(--sz-btn) + 6px); width: var(--sz-btn); height: 68px; padding: 0;
+  flex-direction: column; justify-content: center; gap: 3px; font-size: 11px; }
+body.land .u-keygl { flex-direction: column; gap: 2px; }
+body.land .u-keygl svg { width: 12px; height: 12px; }
+body.land #dock-btn { bottom: calc(var(--side-bot) + var(--sz-btn) + 6px + 68px + 6px); width: var(--sz-btn); height: 84px; padding: 10px 0;
   flex-direction: column; justify-content: center; gap: 6px; border-radius: 999px; font-size: 13px; }
 body.land.u-popopen #dock-btn { display: flex; }
 body.land #dock-btn span { writing-mode: vertical-rl; transform: rotate(180deg); }

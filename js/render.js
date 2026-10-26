@@ -31,7 +31,7 @@ export function spoilerState(data, settings) {
 }
 
 // ---------------------------------------------------------------- geometry helpers ported from build.py
-function starPoints(cx, cy, R, inner) {
+export function starPoints(cx, cy, R, inner) {
   const pts = [];
   for (let i = 0; i < 10; i++) {
     const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 === 0 ? R : R * inner;
@@ -87,11 +87,12 @@ function posterCSS(S, fonts, fontFaces) {
 .pt-est{fill:var(--c-deep);stroke-width:4}
 .stem{stroke:var(--c-bright);stroke-width:2;opacity:.7}.stem-minor{stroke:var(--c-dim_soft)}.stem-key{stroke:var(--c-star);opacity:.9}
 .evk{fill:var(--c-star);stroke:var(--c-star_edge);stroke-width:2.5;stroke-linejoin:round}
-.evn{fill:var(--c-notable_fill);stroke:var(--c-bright);stroke-width:3}
-.evm{fill:var(--c-deep);stroke:var(--c-minor_edge);stroke-width:2}
+${S.ev_marks === 'filled'   // layout.yaml ev_marks: a filled notable disc and a hollow minor ring, or two outlined circles
+    ? '.evn{fill:var(--c-bright);stroke:var(--c-bg);stroke-width:3}.evm{fill:var(--c-deep);stroke:var(--c-minor_ring);stroke-width:2}'
+    : '.evn{fill:var(--c-notable_fill);stroke:var(--c-bright);stroke-width:3}.evm{fill:var(--c-deep);stroke:var(--c-minor_edge);stroke-width:2}'}
 .evnum{font-family:${T};font-weight:700;text-anchor:middle;dominant-baseline:central}
 .ev-key .evnum,.fn-key .evnum{fill:var(--c-star_num);font-weight:800}
-.ev-notable .evnum,.fn-notable .evnum{fill:var(--c-notable_num)}
+.ev-notable .evnum,.fn-notable .evnum{fill:var(--c-${S.ev_marks === 'filled' ? 'notable_disc_num' : 'notable_num'})}
 .ev-minor .evnum,.fn-minor .evnum{fill:var(--c-minor_num);font-weight:600}
 .band-edge{stroke:var(--c-band_edge);stroke-width:2}
 .band-edge2{stroke:var(--c-band_edge2);stroke-width:1}
@@ -142,6 +143,8 @@ function posterCSS(S, fonts, fontFaces) {
 .mjnode.hl .evnode{stroke:var(--c-bright);stroke-width:4}
 .mj-lbl.hl .ev-box{stroke:var(--c-bright);stroke-width:4}
 .mj-lbl.hl .ev-label{fill:var(--c-bright)}
+.mjline.hl .event{opacity:1;stroke-width:${S.event_w + 2}}.mjline.hl .eglow{opacity:1}
+.pline.flash{stroke:var(--c-bright);stroke-width:${S.line_w * 2}}.pglow.flash{opacity:1;stroke-width:${S.line_w + 16}}
 .stem.hl{opacity:1}
 .beam-boost{opacity:.6;pointer-events:none}
 .evmark.pulse{animation:pulse .2s ease-out}
@@ -179,9 +182,11 @@ export function renderPoster(data, theme, opts) {
     } else {
       defs.push(`<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--c-sky_top)" style="stop-color:var(--c-sky_top)"/>` +
         `<stop offset=".55" style="stop-color:var(--c-sky_mid)"/><stop offset="1" style="stop-color:var(--c-sky_bottom)"/></linearGradient>`);
-      if (!opts.live) L.bg.push(`<rect width="${W}" height="${H}" fill="url(#sky)"/>`);
-      L.bg.push(nebulae(W, H, theme.colors.nebulae, defs));
-      L.bg.push(stars(W, H, theme.colors.stars, keepOut(data)));
+      // the live view draws the nebulae and stars in layers of their own (nebulaSVG, drawStars), and keeps only the
+      // reach of the nebulae as an empty rect: without it, WebKit paints slower frames while zooming near the fit
+      if (opts.live) { const [x0, y0, x1, y1] = nebulaSVG(data, theme, H).box; L.bg.push(`<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" fill="none"/>`); }
+      else L.bg.push(`<rect width="${W}" height="${H}" fill="url(#sky)"/>`,
+        nebulae(W, H, theme.colors.nebulae, defs), stars(W, H, theme.colors.stars, keepOut(data)));
     }
   }
   defs.push(`<filter id="glow" x="-1%" y="-200%" width="102%" height="500%"><feGaussianBlur stdDeviation="5"/></filter>`,
@@ -206,21 +211,21 @@ export function renderPoster(data, theme, opts) {
   // ---- lines, ticks, gaps, faces
   for (const ln of data.lines) {
     const ly = ln.y;
-    if (ln.start > ln.x0) L.lines.push(`<line x1="${ln.x0}" y1="${ly}" x2="${ln.start}" y2="${ly}" class="pline-absent"/>`);
+    const pl = opts.live ? ` data-pl="${esc(ln.p)}" data-dim="1"` : '';
+    if (ln.start > ln.x0) L.lines.push(`<line x1="${ln.x0}" y1="${ly}" x2="${ln.start}" y2="${ly}" class="pline-absent"${pl}/>`);
     for (const [a, b] of ln.segs) {
-      L.ticks.unshift(`<line x1="${a}" y1="${ly}" x2="${b}" y2="${ly}" class="pglow"/>`);
-      L.lines.push(`<line x1="${a}" y1="${ly}" x2="${b}" y2="${ly}" class="pline"/>`);
+      L.ticks.unshift(`<line x1="${a}" y1="${ly}" x2="${b}" y2="${ly}" class="pglow"${pl}/>`);
+      L.lines.push(`<line x1="${a}" y1="${ly}" x2="${b}" y2="${ly}" class="pline"${pl}/>`);
     }
-    for (const bx of ln.gaps) L.lines.push(gapMark(bx, ly));
-    L.lines.push(`<path d="M${ln.end} ${ly - 11} L${r1(ln.end + 20)} ${ly} L${ln.end} ${ly + 11}" class="arrow"/>`);
+    L.lines.push(`<g${pl}>${ln.gaps.map(bx => gapMark(bx, ly)).join('')}<path d="M${ln.end} ${ly - 11} L${r1(ln.end + 20)} ${ly} L${ln.end} ${ly + 11}" class="arrow"/></g>`);
     let dd = '', dw = '';
     for (const [x, wk] of ln.ticks) {
       const hh = wk ? S.tick_week : S.tick_day;
       if (wk) dw += `M${x} ${ly - hh}V${ly + hh}`; else dd += `M${x} ${ly - hh}V${ly + hh}`;
     }
-    L.ticks.push(`<path d="${dd}" class="tick"/><path d="${dw}" class="tick-w"/>`);
+    L.ticks.push(`<g${pl}><path d="${dd}" class="tick"/><path d="${dw}" class="tick-w"/></g>`);
     const fx = ln.face.x + 60, fy = ln.face.y, F = S.face;
-    L.labels.push(`<g class="face"><rect x="${fx - 4}" y="${fy - 4}" width="${F + 8}" height="${F + 8}" class="face-glow"/>` +
+    L.labels.push(`<g class="face"${pl}><rect x="${fx - 4}" y="${fy - 4}" width="${F + 8}" height="${F + 8}" class="face-glow"/>` +
       `<rect x="${fx}" y="${fy}" width="${F}" height="${F}" fill="var(--c-bg)"/>` +
       `<image href="${opts.faces[ln.p]}" x="${fx + 5}" y="${fy + 5}" width="${F - 10}" height="${F - 10}" style="image-rendering:pixelated"/>` +
       `<rect x="${fx + 2.5}" y="${fy + 2.5}" width="${F - 5}" height="${F - 5}" class="face-frame"/>` +
@@ -241,12 +246,12 @@ export function renderPoster(data, theme, opts) {
     const bars = [[lo, br.lx], [br.lx + br.lw, hi]].filter(([a, b]) => b - a > 1)
       .map(([a, b]) => `<line x1="${r1(a)}" y1="${y}" x2="${r1(b)}" y2="${y}"/>`).join('');
     const hitA = veiled ? '' : ` data-hit="arc" data-arc-hit="${br.arc}"`;
-    L.lines.push(`<g stroke="${col}" class="bracket${veiled ? ' spoiled' : ' hit'}" data-arc="${br.arc}" data-dim="1"${hitA}>` +
+    L.lines.push(`<g stroke="${col}" class="bracket${veiled ? ' spoiled' : ' hit'}" data-arc="${br.arc}" data-p="${esc(br.p)}" data-dim="1"${hitA}>` +
       (veiled || !opts.live ? '' : `<rect x="${r1(lo)}" y="${r1(y - S.bracket_tick - 6)}" width="${r1(hi - lo)}" height="${2 * S.bracket_tick + 12}" class="br-pad"/>`) + bars +
       `<line x1="${r1(lo)}" y1="${y - S.bracket_tick}" x2="${r1(lo)}" y2="${y + S.bracket_tick}"/>` +
       `<line x1="${r1(hi)}" y1="${y - S.bracket_tick}" x2="${r1(hi)}" y2="${y + S.bracket_tick}"/></g>`);
     const kh = S.arc_fs + 2 * S.label_ko_pad;   // the knockout: leaders and event lines pass behind the centred label
-    L.labels.push(`<g class="arc-lbl${veiled ? '' : ' hit'}" data-arc="${br.arc}" data-dim="1"${hitA}><rect x="${r1(br.lx)}" y="${r1(y - kh / 2)}" width="${br.lw}" height="${kh}" rx="${S.label_ko_r}" class="arc-ko"/>` +
+    L.labels.push(`<g class="arc-lbl${veiled ? '' : ' hit'}" data-arc="${br.arc}" data-p="${esc(br.p)}" data-dim="1"${hitA}><rect x="${r1(br.lx)}" y="${r1(y - kh / 2)}" width="${br.lw}" height="${kh}" rx="${S.label_ko_r}" class="arc-ko"/>` +
       `<text x="${r1(br.lx + br.lw / 2)}" y="${y + 1}" class="arc-label" fill="${col}">${veiled ? '? ? ?' : esc(br.name)}</text></g>`);
   }
 
@@ -260,7 +265,7 @@ export function renderPoster(data, theme, opts) {
       segs += `<line x1="${ev.x}" y1="${a}" x2="${ev.x}" y2="${b}" class="event"/>`;
       glow += `<line x1="${ev.x}" y1="${a}" x2="${ev.x}" y2="${b}" class="eglow"/>`;
     }
-    L.events.push(`<g data-dim="1"${later ? ' class="spoiled"' : ''}>${glow}${segs}</g>`);
+    L.events.push(`<g data-dim="1" data-mjl="${i}"${later ? ' class="spoiled"' : ` class="mjline hit" data-hit="major" data-i="${i}" data-mj="${i}"`}>${glow}${segs}</g>`);
     const h = S.event_node / 2;
     for (const yy of ev.node_ys) {   // live and watched: in a hit group with a pad as far past the diamond as an event mark's
       const node = `<rect x="${r1(ev.x - h)}" y="${r1(yy - h)}" width="${S.event_node}" height="${S.event_node}" transform="rotate(45 ${ev.x} ${yy})" class="evnode"/>`;
@@ -281,10 +286,10 @@ export function renderPoster(data, theme, opts) {
     if (later && sp.mode === 'hide') continue;
     if (m.y !== m.ly) {
       const sg = m.y > m.ly ? 1 : -1;
-      L.leaders.push(`<line x1="${m.x}" y1="${m.ly + sg * S.line_w / 2}" x2="${m.x}" y2="${r1(m.y - sg * (m.r - 1))}" class="stem stem-${m.tier}" data-stem="${m.num}" data-dim="1"/>`);
+      L.leaders.push(`<line x1="${m.x}" y1="${m.ly + sg * S.line_w / 2}" x2="${m.x}" y2="${r1(m.y - sg * (m.r - 1))}" class="stem stem-${m.tier}" data-stem="${m.num}" data-p="${esc(m.p)}" data-dim="1"/>`);
     }
     L.marks.push(later ? `<circle cx="${m.x}" cy="${m.y}" r="${m.r - 1.5}" class="evm spoiled"/>` :
-      `<g class="evmark ev-${m.tier} hit" data-hit="ev" data-num="${m.num}" data-dim="1">${opts.live ? `<circle cx="${m.x}" cy="${m.y}" r="${m.r + S.site_mark_pad}" class="evpad"/>` : ''}${markShape(m.tier, m.x, m.y, m.r, m.num, m.fs, S.star_inner)}</g>`);
+      `<g class="evmark ev-${m.tier} hit" data-hit="ev" data-num="${m.num}" data-p="${esc(m.p)}" data-dim="1">${opts.live ? `<circle cx="${m.x}" cy="${m.y}" r="${m.r + S.site_mark_pad}" class="evpad"/>` : ''}${markShape(m.tier, m.x, m.y, m.r, m.num, m.fs, S.star_inner)}</g>`);
   }
   if (band) {
     for (const ev of data.events) {
@@ -297,7 +302,7 @@ export function renderPoster(data, theme, opts) {
       else body = fn.lines.map((s, k) => `<text x="${tx}" y="${r1(ty + k * S.fn_lh + 18)}" class="fn-text">${esc(s)}</text>`).join('');
       L.labels.push(`<g class="fn fn-${ev.tier}${later ? ' spoiled' : ' hit'}"${later ? '' : ` data-hit="ev" data-num="${ev.num}"`}>` +
         `<rect x="${fn.L}" y="${fn.y}" width="${S.fn_w}" height="${fn.h}" fill="transparent"/>` +
-        `<g transform="translate(${fn.L} ${fn.y})">${later ? `<circle cx="${g / 2}" cy="${g / 2}" r="${g / 2 - 6}" class="evm"/>` : fnGlyph(ev.tier, ev.num, fn.gfs, g, S.star_inner)}</g>${body}</g>`);
+        `<g transform="translate(${fn.L} ${fn.y})">${later ? `<circle cx="${g / 2}" cy="${g / 2}" r="${g / 2 - 6}" class="evm"/>` : fnGlyph(ev.tier, ev.num, fn.gfs, g, S.star_inner, S.fn_r)}</g>${body}</g>`);
     }
     L.labels.push(`<text x="${W - S.panel_x}" y="${H - 52 + 19}" class="stamp">${esc(data.stamp)}</text>`);
     L.labels.push(`<text x="${S.panel_x}" y="${H - 52 + 19}" class="credit">${esc(opts.creditLine || '')}</text>`);
@@ -401,11 +406,11 @@ function markShape(tier, cx, cy, r, num, fs, inner) {
   return `<circle cx="${cx}" cy="${cy}" r="${r - 1.5}" class="ev${tier[0]}"/><text x="${cx}" y="${cy}" class="evnum" font-size="${fs}">${num}</text>`;
 }
 
-function fnGlyph(tier, num, fs, G, inner) {
+export function fnGlyph(tier, num, fs, G, inner, fnR) {   // fnR: the circle's radius per tier in a G-square glyph (FN_R in build.py)
   const c = G / 2;
   if (tier === 'key')
     return `<polygon points="${starPoints(c, c + 1, c, inner)}" class="evk"/><text x="${c}" y="${c + 2.5}" class="evnum" font-size="${fs}">${num}</text>`;
-  return `<circle cx="${c}" cy="${c}" r="${c - 6}" class="ev${tier[0]}"/><text x="${c}" y="${c}" class="evnum" font-size="${fs}">${num}</text>`;
+  return `<circle cx="${c}" cy="${c}" r="${fnR[tier]}" class="ev${tier[0]}"/><text x="${c}" y="${c}" class="evnum" font-size="${fs}">${num}</text>`;
 }
 
 function gapMark(bx, ly) {
@@ -472,23 +477,105 @@ function keepOut(data) {   // where the big "+" sparkles would read as marks (as
   return ko;
 }
 
-function stars(W, H, cols, ko) {   // one path per colour and opacity step, so 10,000+ stars stay cheap to draw
+// The background stars in groups of one colour and opacity, in the order each group first appears (the paint order, so
+// overlapping stars stack the same everywhere): {fill, op, sparkle, r: [x, y, size, ...]}. Sparkles ("+") come last.
+function starGroups(W, H, cols, ko) {
   const rnd = seeded(7), n = Math.floor(W * H / 8000), groups = new Map();
+  const add = (k, fill, op, sparkle, x, y, s) => {
+    let g = groups.get(k); if (!g) groups.set(k, g = { fill, op, sparkle, r: [] });
+    g.r.push(x, y, s);
+  };
   for (let i = 0; i < n; i++) {
     const x = Math.round(rnd() * W), y = Math.round(rnd() * H), s = [2, 2, 2, 3, 3, 4][Math.floor(rnd() * 6)];
     const o = Math.round((0.25 + 0.6 * rnd()) * 10) / 10, c = cols[Math.floor(rnd() * cols.length)];
-    const k = c + '|' + o;
-    groups.set(k, (groups.get(k) || '') + `M${x} ${y}h${s}v${s}h-${s}z`);
+    add(c + '|' + o, c, o, false, x, y, s);
   }
-  let out = '';
-  for (const [k, d] of groups) { const [c, o] = k.split('|'); out += `<path d="${d}" fill="${c}" opacity="${o}"/>`; }
-  let sp = '';
   for (let i = 0; i < Math.floor(n / 120); i++) {
     const x = Math.round(rnd() * W), y = Math.round(rnd() * H);
     if (ko.some(b => b[0] - 24 < x && x < b[2] + 24 && b[1] - 24 < y && y < b[3] + 24)) continue;
-    sp += `M${x - 2} ${y - 9}h4v18h-4zM${x - 9} ${y - 2}h18v4h-18z`;
+    add('sparkle', 'var(--c-sparkle)', '.8', true, x, y, 0);
   }
-  return out + `<path d="${sp}" fill="var(--c-sparkle)" opacity=".8"/>`;
+  return [...groups.values()];
+}
+const starPath = (sparkle, x, y, s) => sparkle ? `M${x - 2} ${y - 9}h4v18h-4zM${x - 9} ${y - 2}h18v4h-18z` : `M${x} ${y}h${s}v${s}h-${s}z`;
+
+// For the PNG export: one path per group within each STAR_CELL square. A path's bounds are its cell, not the whole
+// poster, so a renderer that draws by tiles doesn't walk all 11,000 stars for each one.
+const STAR_CELL = 2048;
+function stars(W, H, cols, ko) {
+  let out = '';
+  for (const g of starGroups(W, H, cols, ko)) {
+    const cells = new Map();
+    for (let i = 0; i < g.r.length; i += 3) {
+      const [x, y, s] = [g.r[i], g.r[i + 1], g.r[i + 2]], ck = Math.floor(x / STAR_CELL) + ',' + Math.floor(y / STAR_CELL);
+      cells.set(ck, (cells.get(ck) || '') + starPath(g.sparkle, x, y, s));
+    }
+    for (const d of cells.values()) out += `<path d="${d}" fill="${g.fill}" opacity="${g.op}"/>`;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- the live view's backdrop
+// The site doesn't draw the background stars in the poster's SVG: as SVG shapes, 11,000 squares cost every browser
+// raster time on each zoom step and each newly shown tile (WebKit walks them per tile; Chrome dropped to about 15 fps
+// once they were split into cells). The page draws them instead on a screen-sized canvas, redrawn with the camera
+// (drawStars), and the nebulae, which lie under them, as a bitmap of their own (nebulaSVG). Both are spread over the
+// live view's height H, as they were when drawn in its SVG; the export spreads them over the whole poster.
+
+// The nebulae alone, cropped to where they reach: {svg, box: [x0, y0, x1, y1]} in poster px. The page draws it once into
+// a small canvas (they're soft gradients, so 1/8 scale looks the same) that the compositor scales with the camera:
+// an SVG layer of its own was repainted on every zoom step in WebKit.
+export function nebulaSVG(data, theme, H) {
+  const defs = [], body = nebulae(data.W, H, theme.colors.nebulae, defs), box = [0, 0, data.W, H];
+  for (const [, cx, cy, rx, ry] of body.matchAll(/cx="([-\d.]+)" cy="([-\d.]+)" rx="([-\d.]+)" ry="([-\d.]+)"/g)) {
+    box[0] = Math.min(box[0], cx - rx); box[1] = Math.min(box[1], cy - ry); box[2] = Math.max(box[2], +cx + +rx); box[3] = Math.max(box[3], +cy + +ry);
+  }
+  const [x0, y0, x1, y1] = box.map(Math.floor);
+  return { box: [x0, y0, x1 + 1, y1 + 1], svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${x1 + 1 - x0}" height="${y1 + 1 - y0}" viewBox="${x0} ${y0} ${x1 + 1 - x0} ${y1 + 1 - y0}">` +
+    `<defs>${defs.join('')}</defs>${body}</svg>` };
+}
+
+// The stars bucketed by STAR_BUCKET squares so a frame visits only the visible ones: per group, the rects sorted by
+// bucket (Float32Array r) and each bucket's start in it (Int32Array at, row-major, one extra entry at the end).
+const STAR_BUCKET = 512;
+export function starField(data, theme, H) {
+  const W = data.W, B = STAR_BUCKET, nx = Math.floor(W / B) + 1, ny = Math.floor(H / B) + 1;
+  const groups = starGroups(W, H, theme.colors.stars, keepOut(data)).map(g => {
+    const n = g.r.length / 3, key = new Int32Array(n), at = new Int32Array(nx * ny + 1);
+    for (let i = 0; i < n; i++) { key[i] = Math.floor(g.r[3 * i + 1] / B) * nx + Math.floor(g.r[3 * i] / B); at[key[i] + 1]++; }
+    for (let k = 0; k < nx * ny; k++) at[k + 1] += at[k];
+    const fill = at.slice(), r = new Float32Array(3 * n);
+    for (let i = 0; i < n; i++) { const j = 3 * fill[key[i]]++; r[j] = g.r[3 * i]; r[j + 1] = g.r[3 * i + 1]; r[j + 2] = g.r[3 * i + 2]; }
+    return { fill: g.sparkle ? theme.colors.sparkle : g.fill, op: g.op, sparkle: g.sparkle, r, at };
+  });
+  return { groups, nx, ny, n: groups.reduce((a, g) => a + g.r.length / 3, 0) };
+}
+
+// Draws the stars on ctx (a canvas covering the stage at dpr device pixels per CSS px) for the camera (s, tx, ty): the
+// visible part of each group as one path, as in the SVG, so overlaps don't add up and the antialiasing of stars smaller
+// than a pixel matches it (fillRect per star drew them visibly brighter when zoomed out, in Chrome).
+export function drawStars(ctx, field, s, tx, ty, vw, vh, dpr) {
+  const B = STAR_BUCKET, pad = 10;   // a sparkle reaches 9 px past its point
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.setTransform(s * dpr, 0, 0, s * dpr, tx * dpr, ty * dpr);
+  const cx0 = Math.max(0, Math.floor((-tx / s - pad) / B)), cx1 = Math.min(field.nx - 1, Math.floor(((vw - tx) / s + pad) / B));
+  const cy0 = Math.max(0, Math.floor((-ty / s - pad) / B)), cy1 = Math.min(field.ny - 1, Math.floor(((vh - ty) / s + pad) / B));
+  if (cx0 > cx1 || cy0 > cy1) return;
+  for (const g of field.groups) {
+    const { r, at } = g;
+    ctx.beginPath();
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const a = at[cy * field.nx + cx0], b = at[cy * field.nx + cx1 + 1];   // the buckets of a row are contiguous
+      for (let j = 3 * a; j < 3 * b; j += 3) {
+        if (g.sparkle) { ctx.rect(r[j] - 2, r[j + 1] - 9, 4, 18); ctx.rect(r[j] - 9, r[j + 1] - 2, 18, 4); }
+        else ctx.rect(r[j], r[j + 1], r[j + 2], r[j + 2]);
+      }
+    }
+    ctx.globalAlpha = +g.op; ctx.fillStyle = g.fill;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function panel(data, theme, S, sp, TF, PF, live) {

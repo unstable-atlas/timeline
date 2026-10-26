@@ -31,6 +31,8 @@
   <div id="sky"></div>
   <div id="starfield"></div>
   <div id="bgimg" hidden></div>
+  <img id="nebula" alt="">
+  <canvas id="pstars"></canvas>
   <div id="poster" role="img" aria-label="Story timeline poster"></div>
 </div>
 
@@ -65,7 +67,10 @@
   <button class="u-phone u-icon" data-open="menu" aria-label="More"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
 </header>
 
-<button id="b-legend" class="u-fab u-icon" data-open="legend" title="Legend: how to read the map" aria-label="Legend"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="4" height="4" rx=".5"/><path d="M11 6.5h9.5"/><path d="M5.5 10.5l2 3.5h-4z"/><path d="M11 12h9.5"/><circle cx="5.5" cy="18" r="2"/><path d="M11 18h9.5"/></svg></button>
+<!-- the map key: the poster's own glyphs (filled in by app.js) and its name -->
+<button id="b-legend" class="u-fab u-pillbtn" data-open="legend" aria-label="Map key"><span class="u-keygl" aria-hidden="true"></span><span class="u-keyw">Key</span></button>
+<div id="key-hint" hidden><button data-open="legend">What do the stars, circles and gold lines mean? <span aria-hidden="true">›</span></button></div>
+<div id="mjtags" aria-label="Major events in view"></div>
 <button id="b-fit2" class="u-fab u-icon u-phone" title="Fit" aria-label="Fit"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
 <button id="focus-chip" class="u-pillbtn" hidden></button>
 <div id="hover-label" hidden></div>
@@ -124,10 +129,10 @@
   <p class="u-hint">A fan project, not affiliated with the creators.</p>
 </section>
 
-<section class="u-dlg" id="legend" role="dialog" aria-label="Legend" hidden>
+<section class="u-dlg" id="legend" role="dialog" aria-label="Map key" hidden>
   <button class="u-close" aria-label="Close">×</button>
-  <details id="lg-read"><summary class="u-h">Reading the map</summary><div id="lg-rows"></div></details>
-  <details id="lg-arcs"><summary class="u-h">Arcs</summary><div id="lg-arclist"></div></details>
+  <details id="lg-read" open><summary class="u-h">Reading the map</summary><div id="lg-rows"></div></details>
+  <details id="lg-arcs"><summary class="u-h">Arcs <span id="lg-arcn"></span></summary><div id="lg-arclist"></div></details>
 </section>
 
 <section id="search" class="u-search" role="dialog" aria-label="Search" hidden>
