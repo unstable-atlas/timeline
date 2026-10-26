@@ -1,0 +1,1082 @@
+import { CONFIG } from './config.js';
+import { renderPoster, liveHeight, esc, spoilerState, cssVars, seeded } from './render.js';
+import { Viewer } from './view.js';
+import { Search } from './search.js';
+
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const body = document.body, host = $('#poster'), stage = $('#stage'), pop = $('#pop');
+const T0 = performance.now();
+let data, theme, S, LH, viewer, settings, bgImage = null;
+let epById, epByN, evByNum, lineY, lineEps, majorsByX;
+const thumbs = {};            // id -> blob URL, all decoded behind the loading screen
+const thumbBlobs = {};        // id -> Blob, for the PNG export
+const keepDecoded = [];       // the decoded <img> objects, kept so the browser keeps their bitmaps
+// Layout mode: 'desk', 'phone' (narrow) or 'land' (a touch screen held sideways, at most site_land_max_h tall). phone is
+// true in both phone modes (touch taps, sheets, the icon toolbar); land swaps the bottom sheets and the top toolbar for
+// side panels and a button column at the right edge.
+let mode = null, phone = false, land = false;
+const safe = { t: 0, r: 0, b: 0, l: 0 };   // safe-area insets (notches, the home indicator), CSS px
+let search;
+let cardY0 = 0, cardY1 = 1;   // top of the highest card, bottom of the lowest: 100% zoom fits these
+
+// ---------------------------------------------------------------- settings (this browser only)
+const DEFAULTS = { spoiler: { on: false, upTo: 1, mode: 'blur' }, arcColors: {}, bgDim: 0.45, dockOpen: false };
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(CONFIG.storageKey) || '{}');
+    bgImage = localStorage.getItem(CONFIG.storageKey + ':bg');
+    return { ...DEFAULTS, ...s, spoiler: { ...DEFAULTS.spoiler, ...(s.spoiler || {}) } };
+  } catch { return structuredClone(DEFAULTS); }
+}
+function saveSettings() {
+  try { localStorage.setItem(CONFIG.storageKey, JSON.stringify(settings)); } catch { /* private mode: settings last for this visit */ }
+}
+function saveBg() {
+  try {
+    if (bgImage) localStorage.setItem(CONFIG.storageKey + ':bg', bgImage); else localStorage.removeItem(CONFIG.storageKey + ':bg');
+    return true;
+  } catch { return false; }
+}
+const sp = () => spoilerState(data, settings);
+const hiddenN = n => { const s = sp(); return s.later(n) && s.mode === 'hide'; };
+
+// ---------------------------------------------------------------- startup
+async function start() {
+  const [d, t] = await Promise.all([fetch(CONFIG.poster).then(r => r.json()), fetch(CONFIG.theme).then(r => r.json())]);
+  data = d; theme = t; S = data.sizes; LH = liveHeight(data);
+  index();
+  applyVars();
+  readSafe();
+  setMode(layoutMode());
+  settings = loadSettings();
+  settings.spoiler.upTo = Math.min(Math.max(data.ep_first, settings.spoiler.upTo), data.ep_last);
+  buildSky();
+
+  const fontsDone = loadFonts().then(() => body.classList.add('fonts'));
+  const thumbsDone = preloadThumbs();
+  await fontsDone;   // text is measured with the page's fonts, so the poster is drawn once they're in
+  document.title = `Unstable Universe Timeline · E${data.ep_first}–${data.ep_last}`;
+  draw();
+  viewer = new Viewer(stage, host, data.W, LH, {
+    maxScale: S.site_max_scale, insets, fitHeight: () => phone && !land,
+    homeScale: () => land ? S.site_land_home_zoom / 100 * fitScale() : null,
+    rubberMax: S.site_rubber_max, rubberK: S.site_rubber_k, rubberMs: S.site_rubber_ms,
+    onChange: frame, onSettle: settle, onTap: tap, onHover: hover, onGestureStart: () => { hoverLabel(null); },
+  });
+  const h = viewer.home();
+  viewer.set(h.s, h.tx, h.ty);
+  syncDock();
+  buildRail(); buildSpoilers(); buildSettings(); buildExport(); buildLegend();
+  search = new Search($('#search'), { data, sp, thumbs, faces: faces(), go: goToResult,
+    glyph: (kind, tier, num) => kind === 'major' ? diamondSVG(24) : glyphSVG(tier, num) });
+  applyHash(true);
+  addEventListener('hashchange', () => applyHash(false));
+  window.__timing = { ...(window.__timing || {}), interactive: performance.now() - T0 };
+  await thumbsDone;
+  await setThumbs();
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  $('#loading').classList.add('done');
+  body.classList.add('ready');
+  window.__timing.ready = performance.now() - T0;
+}
+
+function index() {
+  epById = Object.fromEntries(data.episodes.map(e => [e.id, e]));
+  epByN = Object.fromEntries(data.episodes.map(e => [e.n, e]));
+  evByNum = Object.fromEntries(data.events.map(e => [e.num, e]));
+  lineY = Object.fromEntries(data.lines.map(l => [l.p, l.y]));
+  lineEps = {};
+  for (const p of data.protags) lineEps[p] = data.episodes.filter(e => e.creator === p).sort((a, b) => a.x - b.x || a.n - b.n);
+  majorsByX = data.majors.map((m, i) => ({ ...m, i })).sort((a, b) => a.x - b.x);
+  cardY0 = Math.min(...data.episodes.map(e => e.top));
+  cardY1 = Math.max(...data.episodes.map(e => e.top + e.h));
+}
+
+function layoutMode() {
+  if (innerHeight <= S.site_land_max_h && innerWidth > innerHeight && matchMedia('(pointer: coarse)').matches) return 'land';
+  return innerWidth <= S.site_phone_max_w ? 'phone' : 'desk';
+}
+function setMode(m) {
+  mode = m; phone = m !== 'desk'; land = m === 'land';
+  body.classList.toggle('phone', phone); body.classList.toggle('land', land);
+  applyVars.setMode(m);
+}
+function readSafe() {   // env(safe-area-inset-*) as numbers, through a probe padded with them
+  const cs = getComputedStyle($('#safe-probe'));
+  Object.assign(safe, { t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0, b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0 });
+}
+const colW = () => safe.r + S.site_btn_land + 16;   // landscape: the button column at the right edge, with its margins
+const insets = () => land ? { top: safe.t, bottom: safe.b, left: safe.l, right: colW() }
+  : phone ? { top: S.site_bar_h_phone + safe.t, bottom: S.site_pill_h_phone + 16 + safe.b }
+  : { top: S.site_bar_h + safe.t, bottom: S.site_dock_h + safe.b };
+
+function applyVars() {   // theme.yaml `ui` colours and layout.yaml `site` sizes as CSS variables
+  const r = document.documentElement.style;
+  for (const [k, v] of Object.entries(theme.ui || {})) r.setProperty(`--ui-${k}`, v);
+  const px = (k, v) => r.setProperty(k, v + 'px');
+  px('--sz-dock', S.site_dock_h); px('--sz-chip-w', S.site_dock_chip_w); px('--sz-legend', S.site_legend_w); px('--sz-popup', S.site_popup_w);
+  const setMode = m => {
+    const k = { desk: '', phone: '_phone', land: '_land' }[m], ph = m === 'desk' ? '' : '_phone';
+    px('--sz-btn', S['site_btn' + k]); px('--sz-bar', S['site_bar_h' + ph]);
+    px('--sz-rail', S['site_rail_w' + k]); px('--sz-rail-face', S['site_rail_face' + k]);
+    px('--sz-pill', S['site_pill_h' + ph]);
+    r.setProperty('--sheet-h', `${S.site_sheet_frac * 100}dvh`);
+    px('--sz-side', S.site_land_side_w); px('--sz-col', S.site_btn_land + 16);
+  };
+  applyVars.setMode = setMode;
+  r.setProperty('--pix', `'${theme.fonts.pixel.family}', monospace`);
+  r.setProperty('--txt', `'${theme.fonts.text.family}', system-ui, sans-serif`);
+  setRootColours();
+}
+function setRootColours() {   // the legend and the dock draw marks with the poster's classes, so they need its colours too
+  document.documentElement.style.cssText = document.documentElement.style.cssText.replace(/--[ca]-[^;]+;?/g, '') + ';' + cssVars(theme, settings || DEFAULTS);
+}
+
+async function loadFonts() {
+  for (const f of Object.values(theme.fonts)) {
+    const face = new FontFace(f.family, `url(${CONFIG.fonts}${f.file})`, f.family === theme.fonts.text.family ? { weight: '300 900' } : {});
+    document.fonts.add(face);
+  }
+  await Promise.all([...document.fonts].map(f => f.load().catch(() => null)));
+}
+
+// every thumbnail, decoded before the loading screen goes, so nothing pops in later
+async function preloadThumbs() {
+  const eps = [...data.episodes].sort((a, b) => a.x - b.x);
+  const sizes = data.thumb_bytes || {};
+  const total = Object.values(sizes).reduce((a, b) => a + b, 0) || eps.length;
+  let done = 0, i = 0;
+  const fill = $('#load-fill'), text = $('#load-text');
+  const worker = async () => {
+    while (i < eps.length) {
+      const e = eps[i++];
+      try {
+        const blob = await fetch(CONFIG.thumbUrl(e)).then(r => { if (!r.ok) throw new Error(r.status); return r.blob(); });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        thumbs[e.id] = url; thumbBlobs[e.id] = blob; keepDecoded.push(img);
+      } catch (err) { console.warn('thumbnail', e.id, err); }
+      done += sizes[e.id] || 1;
+      fill.style.width = `${(100 * done / total).toFixed(1)}%`;
+      text.textContent = `Loading ${Object.keys(thumbs).length} / ${eps.length} episodes`;
+    }
+  };
+  await Promise.all(Array.from({ length: CONFIG.thumbConcurrency }, worker));
+  window.__timing = { ...(window.__timing || {}), thumbs: performance.now() - T0 };
+}
+
+function setThumbs() {   // fill every card's thumbnail at once and wait until they're painted-ready
+  const imgs = host.querySelectorAll('image.th');
+  const ps = [];
+  for (const img of imgs) {
+    const u = thumbs[img.dataset.id];
+    if (!u || img.getAttribute('href') === u) continue;
+    ps.push(new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); }));
+    img.setAttribute('href', u);
+  }
+  return Promise.race([Promise.all(ps), new Promise(r => setTimeout(r, 4000))]);
+}
+
+const creditLine = () => `Data: Unstable Universe Wiki (CC BY-SA 3.0) · Videos by ${data.protags.join(', ')} · fan-made, unofficial`;
+const faces = () => Object.fromEntries(data.protags.map(p => [p, `${CONFIG.faces}${p}.png`]));
+
+const idx = { ep: new Map(), ev: new Map(), mj: new Map(), dim: [] };
+function draw() {
+  const t = performance.now();
+  host.innerHTML = renderPoster(data, theme, { live: true, thumbs, faces: faces(), settings, background: bgImage, bgDim: settings.bgDim });
+  host.style.width = data.W + 'px'; host.style.height = LH + 'px';
+  host.firstElementChild.style.overflow = 'visible';   // nebulae fade past the poster's edges instead of ending there
+  idx.ep.clear(); idx.ev.clear(); idx.mj.clear();
+  for (const el of host.querySelectorAll('[data-ep]')) { const k = el.dataset.ep; if (!idx.ep.has(k)) idx.ep.set(k, []); idx.ep.get(k).push(el); }
+  for (const el of host.querySelectorAll('.evmark[data-num], [data-stem]')) {
+    const k = +(el.dataset.num || el.dataset.stem); if (!idx.ev.has(k)) idx.ev.set(k, []); idx.ev.get(k).push(el);
+  }
+  for (const el of host.querySelectorAll('[data-mj]')) { const k = +el.dataset.mj; if (!idx.mj.has(k)) idx.mj.set(k, []); idx.mj.get(k).push(el); }
+  idx.dim = [...host.querySelectorAll('[data-dim]')];
+  hlKey = null; hlEls = []; boosts = [];
+  $('#bgimg').hidden = !bgImage;
+  $('#starfield').hidden = !!bgImage;
+  if (bgImage) { $('#bgimg').style.backgroundImage = `url(${bgImage})`; $('#bgimg').style.setProperty('--bg-dim', settings.bgDim); }
+  if (focusArcId) applyFocus(focusArcId, false);
+  updateSpoilerUI();
+  buildDock();
+  if (viewer) { syncDock(); frame(viewer.view()); }
+  window.__timing = { ...(window.__timing || {}), draw: performance.now() - t };
+}
+
+// ---------------------------------------------------------------- the sky behind the poster
+// The poster itself is drawn without its sky gradient; the page draws it here, scaled with the poster, and sky_top /
+// sky_bottom continue above and below it. An endless tiling starfield moves at a fraction of the pan (parallax).
+function buildSky() {
+  const c = theme.colors, sky = $('#sky'), tile = S.site_star_tile;
+  sky.innerHTML = `<div style="position:absolute;left:0;right:0;bottom:100%;height:300vh;background:${c.sky_top}"></div>`;
+  sky.style.cssText += `height:100px;background:linear-gradient(180deg,${c.sky_top},${c.sky_mid} 55%,${c.sky_bottom})`;
+  stage.style.background = c.sky_bottom;
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  const cv = document.createElement('canvas'); cv.width = cv.height = tile * dpr;
+  const x = cv.getContext('2d'), rnd = seeded(11);
+  for (let i = 0; i < S.site_star_n; i++) {
+    const px = Math.floor(rnd() * tile), py = Math.floor(rnd() * tile), s = [1, 1, 2, 2, 3][Math.floor(rnd() * 5)];
+    x.globalAlpha = 0.2 + 0.5 * rnd();
+    x.fillStyle = c.stars[Math.floor(rnd() * c.stars.length)];
+    x.fillRect(px * dpr, py * dpr, s * dpr, s * dpr);
+  }
+  const sf = $('#starfield');
+  sf.style.cssText = `left:0;top:0;width:calc(100% + ${2 * tile}px);height:calc(100% + ${2 * tile}px);` +
+    `background-image:url(${cv.toDataURL()});background-size:${tile}px ${tile}px`;
+}
+// The starfield has its own camera: it pans site_parallax as far as the poster and zooms by (zoom ratio)^site_parallax,
+// about the same screen point as the poster (the cursor or the pinch centre: the fixed point of the poster's change).
+let bgCam = null;
+function moveSky(v) {
+  $('#sky').style.transform = `translate(0,${v.ty}px) scale(1,${LH * v.s / 100})`;
+  const k = S.site_parallax, tile = S.site_star_tile;
+  const b = Math.max(1, Math.pow(v.s / viewer.minScale, k));
+  const c = bgCam || (bgCam = { x: 0, y: 0, b, s: v.s, tx: v.tx, ty: v.ty });
+  const r = v.s / c.s, q = b / c.b;
+  if (Math.abs(r - 1) < 1e-4) { c.x += k * (v.tx - c.tx); c.y += k * (v.ty - c.ty); }
+  else {
+    const fx = (v.tx - r * c.tx) / (1 - r), fy = (v.ty - r * c.ty) / (1 - r);
+    c.x = fx + q * (c.x - fx); c.y = fy + q * (c.y - fy);
+  }
+  Object.assign(c, { b, s: v.s, tx: v.tx, ty: v.ty });
+  const P = tile * b, m = a => ((a % P) + P) % P - P;
+  $('#starfield').style.transform = `translate(${m(c.x).toFixed(1)}px,${m(c.y).toFixed(1)}px) scale(${b.toFixed(4)})`;
+}
+
+// ---------------------------------------------------------------- per frame and on settle
+let lastS = null;
+let geom = null;   // the camera as last drawn, for a rotation: the poster point at the area's centre, the scale, at home
+function frame(v) {
+  const a = viewer.area();
+  geom = { x: ((a.x0 + a.x1) / 2 - v.tx) / v.s, y: ((a.y0 + a.y1) / 2 - v.ty) / v.s, s: v.s, home: atHome(), wide: v.vw > v.vh };
+  moveSky(v);
+  updateRail(v);
+  if (popState) placePop();
+  if (lastS !== v.s) { lastS = v.s; $('#zoom-pct').textContent = `${Math.round(zoomPct(v.s))}%`; }
+}
+function settle(v) {
+  updateLegendInView(v);
+  if (!popState && !viewer.anim && !viewer.pointers.size) setHash(atHome() ? '' : viewHash(v));
+}
+
+// ---------------------------------------------------------------- zoom indicator: 100% fits all four lines' cards
+function fitScale() { const a = viewer.area(); return (a.y1 - a.y0) / (cardY1 - cardY0); }
+const zoomPct = s => 100 * s / fitScale();
+const zoomBtn = $('#zoom-pct'), zoomIn = $('#zoom-input');
+zoomBtn.addEventListener('click', () => {
+  zoomIn.value = Math.round(zoomPct(viewer.s));
+  zoomBtn.hidden = true; zoomIn.hidden = false; zoomIn.focus(); zoomIn.select();
+});
+function endZoomEdit(apply) {
+  if (zoomIn.hidden) return;
+  const v = parseFloat(zoomIn.value.replace(',', '.'));
+  zoomIn.hidden = true; zoomBtn.hidden = false;
+  if (!apply || !(v > 0)) return;
+  const a = viewer.area(), s = viewer.clampS(v / 100 * fitScale());
+  viewer.zoomAt(s / viewer.s, innerWidth / 2, (a.y0 + a.y1) / 2, true);
+}
+zoomIn.addEventListener('keydown', e => { if (e.key === 'Enter') endZoomEdit(true); else if (e.key === 'Escape') endZoomEdit(false); e.stopPropagation(); });
+zoomIn.addEventListener('blur', () => endZoomEdit(true));
+
+// ---------------------------------------------------------------- deep links: #E028, #ev-12, #major-2 or #@x,y,zoom%
+function setHash(h) {
+  if ((location.hash || '') === h) return;
+  history.replaceState(null, '', h || location.pathname + location.search);
+}
+function viewHash(v) {
+  const a = viewer.area(), x = ((a.x0 + a.x1) / 2 - v.tx) / v.s, y = ((a.y0 + a.y1) / 2 - v.ty) / v.s;
+  return `#@${Math.round(x)},${Math.round(y)},${+zoomPct(v.s).toFixed(1)}`;
+}
+function atHome() { const h = viewer.home(); return Math.abs(viewer.s - h.s) < 1e-4 && Math.abs(viewer.tx - h.tx) < 1 && Math.abs(viewer.ty - h.ty) < 1; }
+function popHash(st) {
+  if (st.kind === 'ep') return '#' + epNo(epById[st.id].n);
+  return st.kind === 'ev' ? `#ev-${st.num}` : `#major-${st.i + 1}`;
+}
+function applyHash(initial) {
+  let h = location.hash.slice(1);
+  try { h = decodeURIComponent(h); } catch { /* a stray % (e.g. a hand-typed zoom) must not stop the page loading */ }
+  let m, hit = null;
+  if ((m = h.match(/^E0*(\d{1,3})$/i)) && epByN[+m[1]]) hit = { kind: 'ep', id: epByN[+m[1]].id };
+  else if ((m = h.match(/^ev-(\d+)$/i)) && evByNum[+m[1]] && !sp().later(evByNum[+m[1]].first)) hit = { kind: 'ev', num: +m[1] };
+  else if ((m = h.match(/^major-(\d+)$/i)) && data.majors[+m[1] - 1] && !sp().later(data.majors[+m[1] - 1].first)) hit = { kind: 'major', i: +m[1] - 1 };
+  else if ((m = h.match(/^@(-?[\d.]+),(-?[\d.]+),([\d.]+)%?$/))) {
+    const a = viewer.area(), s = viewer.clampS(+m[3] / 100 * fitScale());
+    const t = { s, tx: (a.x0 + a.x1) / 2 - +m[1] * s, ty: (a.y0 + a.y1) / 2 - +m[2] * s };
+    closePop(true);
+    if (initial) viewer.set(t.s, t.tx, t.ty); else viewer.animateTo(t);
+    return;
+  }
+  if (hit && !(popState && popHash(popState) === '#' + h)) openPop(hit, { fly: true, instant: initial });
+}
+
+// A rotation or a change of layout mode keeps the poster point at the centre and the scale (or the home view, if the
+// camera was there), the open popup, sheet or dialog and the spoiler setting; a plain resize keeps the translation.
+addEventListener('resize', () => {
+  if (!data || !viewer) return;
+  const was = mode, m = layoutMode(), g = geom;
+  readSafe();
+  if (m !== was) { setMode(m); if ((was === 'desk') !== (m === 'desk')) closeSheet(); }
+  if (g && (m !== was || (innerWidth > innerHeight) !== g.wide)) {
+    viewer.stop();
+    const t = g.home ? viewer.home() : viewer.centreOn(g.x, g.y, g.s);
+    viewer.set(t.s, t.tx, t.ty);
+    if (popState) relayoutPop();
+  } else viewer.set(viewer.s, viewer.tx, viewer.ty);
+  syncDock();
+  lastS = null;
+});
+
+// Variables the panes move by: set on those elements only, never on :root, which would restyle the whole poster.
+const PANES = ['#bar', '#b-legend', '#b-fit2', '#legend'];
+function setPaneVar(k, v) { for (const sel of PANES) $(sel).style.setProperty(k, v); }
+
+// ---------------------------------------------------------------- left rail: whose line is this
+const rail = $('#rail');
+let railOn = false;
+function buildRail() {
+  rail.innerHTML = data.lines.map(l => `<div class="u-face" data-p="${esc(l.p)}" title="${esc(l.p)}"><img src="${CONFIG.faces}${esc(l.p)}.png" alt="${esc(l.p)}"><span>${esc(l.p)}</span></div>`).join('');
+  rail.onclick = e => {
+    const f = e.target.closest('.u-face'); if (!f) return;
+    const a = viewer.area(), y = lineY[f.dataset.p];
+    viewer.animateTo({ s: viewer.s, tx: viewer.tx, ty: (a.y0 + a.y1) / 2 - y * viewer.s });
+  };
+}
+function updateRail(v) {
+  const ln = data.lines[0], F = S.face, faceCx = ln.face.x + 60 + F / 2;
+  const railW = land ? S.site_rail_w_land : phone ? S.site_rail_w_phone : S.site_rail_w;
+  const on = v.tx + faceCx * v.s < (land ? safe.l : 0) + railW;
+  if (on !== railOn) { railOn = on; rail.classList.toggle('on', on); setPaneVar('--rail-shift', on ? railW + 'px' : '0px'); }
+  if (!on) return;
+  const a = viewer.area(), fh = (land ? S.site_rail_face_land : phone ? S.site_rail_face_phone : S.site_rail_face) + (phone ? 4 : 18), ch = S.site_rail_chip + 14;
+  let up = 0, down = 0;
+  const items = rail.children;
+  const ys = data.lines.map(l => v.ty + l.y * v.s);
+  const nDown = ys.filter(y => y > a.y1).length;
+  data.lines.forEach((l, k) => {
+    const el = items[k], sy = ys[k];
+    let y, chip = null;
+    if (sy < a.y0) { chip = 'up'; y = a.y0 + 4 + up++ * S.site_rail_chip_step; }
+    else if (sy > a.y1) { chip = 'down'; y = a.y1 - ch - 4 - (nDown - 1 - down++) * S.site_rail_chip_step; }
+    else y = Math.min(a.y1 - fh, Math.max(a.y0, sy - (phone ? fh / 2 : (S.site_rail_face + 4) / 2)));
+    el.classList.toggle('chip', !!chip); el.classList.toggle('up', chip === 'up'); el.classList.toggle('down', chip === 'down');
+    el.style.transform = `translateY(${y.toFixed(1)}px)`;
+    el.style.zIndex = chip ? 1 : 2;
+  });
+}
+
+// ---------------------------------------------------------------- events dock: every event, in story order
+// Numbered and major events by x (a numbered event on a major event's day comes first, as its mark does). Hidden until
+// the visitor opens it with its toggle (the phone sheet too). It never follows the camera: it scrolls only when it's
+// opened (to the selected event, or else to those in view at that moment) and when an event is selected.
+const dock = $('#dock'), dockRow = $('#dock-row'), dockBtn = $('#dock-btn'), evSheet = $('#events-sheet'), evList = $('#events-list');
+let dockItems = [], dockSel = null;
+const TIER = { key: 'Key event', notable: 'Notable event', minor: 'Minor event' };
+const itemKey = it => it.kind === 'ev' ? `ev:${it.num}` : `major:${it.i}`;
+function diamondSVG(size = 18) {   // the poster's major-event node: a gold square on its corner
+  return `<svg class="u-diamond" viewBox="0 0 20 20" width="${size}" height="${size}" aria-hidden="true"><rect x="4.4" y="4.4" width="11.2" height="11.2" rx="1" transform="rotate(45 10 10)" class="u-dia"/></svg>`;
+}
+function glyphSVG(tier, num, veiled = false) {   // the footnote glyph, as in the poster's band
+  const G = 46, c = G / 2, inner = S.star_inner;
+  if (veiled) return `<svg viewBox="0 0 ${G} ${G}"><circle cx="${c}" cy="${c}" r="${c - 8}" class="evm"/></svg>`;
+  const fs = tier === 'key' ? 13 : tier === 'minor' ? 14 : 15;
+  let shape;
+  if (tier === 'key') {
+    const pts = [];
+    for (let i = 0; i < 10; i++) { const an = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? c * inner : c; pts.push(`${(c + rr * Math.cos(an)).toFixed(1)},${(c + 1 + rr * Math.sin(an)).toFixed(1)}`); }
+    shape = `<polygon points="${pts.join(' ')}" class="evk"/><text x="${c}" y="${c + 2.5}" class="evnum" font-size="${fs}">${num}</text>`;
+  } else shape = `<circle cx="${c}" cy="${c}" r="${c - 6}" class="ev${tier[0]}"/><text x="${c}" y="${c}" class="evnum" font-size="${fs}">${num}</text>`;
+  return `<svg viewBox="0 0 ${G} ${G}" class="ev-${tier}">${shape}</svg>`;
+}
+function chipHTML(it) {
+  if (it.kind === 'major') {
+    const m = data.majors[it.i], veiled = sp().later(m.first);
+    return `<button class="u-chip major${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ''}>` +
+      `<span class="u-gl">${veiled ? glyphSVG('minor', 0, true) : diamondSVG(30)}</span><span class="u-txt">${veiled ? 'Not watched yet' : esc(m.full)}</span></button>`;
+  }
+  const ev = evByNum[it.num], veiled = sp().later(ev.first);
+  return `<button class="u-chip ${ev.tier}${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ''}>${glyphSVG(ev.tier, ev.num, veiled)}` +
+    `<span class="u-txt">${veiled ? 'Not watched yet' : esc(ev.short)}</span></button>`;
+}
+function buildDock() {
+  const items = [];
+  for (const ev of data.events) {
+    if (hiddenN(ev.first)) continue;
+    const m = data.marks.find(mk => mk.num === ev.num);
+    items.push({ kind: 'ev', num: ev.num, x: m ? m.x : 0, ord: 0 });
+  }
+  data.majors.forEach((m, i) => { if (!hiddenN(m.first)) items.push({ kind: 'major', i, x: m.x, ord: 1 }); });
+  items.sort((a, b) => a.x - b.x || a.ord - b.ord || (a.num || 0) - (b.num || 0));
+  dockItems = items;
+  const html = items.map(chipHTML).join('');
+  dockRow.innerHTML = html; evList.innerHTML = html;
+  if (dockSel) selectInDock(dockSel, false);
+}
+function inViewKeys(v) {
+  const a = viewer.area(), x0 = -v.tx / v.s, x1 = (v.vw - v.tx) / v.s, y0 = (a.y0 - v.ty) / v.s, y1 = (a.y1 - v.ty) / v.s;
+  const keys = new Set();
+  for (const m of data.marks) if (m.x >= x0 && m.x <= x1 && m.y >= y0 && m.y <= y1 && !hiddenN(m.first)) keys.add(`ev:${m.num}`);
+  data.majors.forEach((m, i) => {
+    if (m.x >= x0 && m.x <= x1 && !hiddenN(m.first) && m.segs.some(([a0, b0]) => b0 >= y0 && a0 <= y1)) keys.add(`major:${i}`);
+  });
+  return keys;
+}
+const dockOpen = () => phone ? !evSheet.hidden : settings.dockOpen;
+function syncDock() {   // the toggle's state, the dock's visibility and the controls it lifts
+  const open = dockOpen();
+  dock.hidden = phone || !settings.dockOpen;
+  dockBtn.setAttribute('aria-expanded', open);
+  dockBtn.title = open ? 'Hide the events' : 'Show the events';
+  // the legend button sits level with the toggle, or above the open dock
+  setPaneVar('--fab-bottom', phone ? '8px' : settings.dockOpen ? `${S.site_dock_h + 10}px` : `${(S.site_dock_h - S.site_btn) / 2}px`);
+  rail.style.setProperty('--rail-bottom', !phone && settings.dockOpen ? `${S.site_dock_h}px` : '0px');
+}
+function setDockOpen(open) {
+  if (phone) {
+    if (open) {
+      evSheet.hidden = false; closePop();
+      const c = evList.querySelector('.u-sel') || [...evList.children].find(c => inViewKeys(viewer.view()).has(c.dataset.k));
+      evList.scrollTop = c ? c.offsetTop - evList.offsetTop - 8 : 0;
+    } else evSheet.hidden = true;
+  } else {
+    settings.dockOpen = open; saveSettings();
+  }
+  syncDock();
+  if (open && !phone) showInDock();
+}
+function closeSheet() { if (!evSheet.hidden) { evSheet.hidden = true; syncDock(); } }
+function showInDock() {   // on opening: the selected chip centred, or else the run of chips in view at this moment
+  if (dockSel) return selectInDock(dockSel, true, 'auto');
+  const keys = inViewKeys(viewer.view()), chips = [...dockRow.children].filter(c => keys.has(c.dataset.k));
+  if (!chips.length) return;
+  const a = chips[0].offsetLeft, b = chips[chips.length - 1].offsetLeft + chips[chips.length - 1].offsetWidth, w = dockRow.clientWidth;
+  dockRow.scrollLeft = b - a > w - 40 ? a - 20 : (a + b) / 2 - w / 2;
+}
+function selectInDock(k, scroll = true, behavior = null) {   // a selected event: marked and centred in the dock (and the phone list)
+  dockSel = k;
+  for (const list of [dockRow, evList]) for (const c of list.children) c.classList.toggle('u-sel', c.dataset.k === k);
+  const c = dockRow.querySelector(`[data-k="${k}"]`);
+  if (!scroll || !c || dock.hidden) return;
+  const left = c.offsetLeft + c.offsetWidth / 2 - dockRow.clientWidth / 2, far = Math.abs(left - dockRow.scrollLeft) > 2 * dockRow.clientWidth;
+  dockRow.scrollTo({ left, behavior: behavior || (viewer.reduced || far ? 'auto' : 'smooth') });   // a long way: a jump, not a slow slide
+}
+function unselectInDock() {
+  if (!dockSel) return;
+  dockSel = null;
+  for (const c of document.querySelectorAll('.u-chip.u-sel')) c.classList.remove('u-sel');
+}
+function chipEnter(e) {
+  const c = e.target.closest('.u-chip');
+  if (!c || c.disabled) return;
+  const [kind, n] = c.dataset.k.split(':');
+  if (kind === 'ev') { highlight('ev', +n); pulse(+n); } else highlight('major', +n);
+}
+function chipOpen(c) {
+  const [kind, n] = c.dataset.k.split(':');
+  if (kind === 'ev') openEventFromList(+n); else openPop({ kind: 'major', i: +n }, { glide: true });
+}
+dockRow.addEventListener('pointerover', chipEnter);
+dockRow.addEventListener('pointerout', e => { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.u-chip')) { if (!popState) highlight(null); } });
+dockRow.addEventListener('click', e => { const c = e.target.closest('.u-chip'); if (c) chipOpen(c); });
+dockBtn.addEventListener('click', () => setDockOpen(!dockOpen()));
+evList.addEventListener('click', e => { const c = e.target.closest('.u-chip'); if (c) { setDockOpen(false); chipOpen(c); } });
+swipeToClose(evSheet, () => setDockOpen(false), () => !land);
+
+function openEventFromList(num) {   // from the dock: the event's mark nearest the middle of the view
+  const v = viewer.view(), cy = (v.y0 + v.y1) / 2;
+  const ms = data.marks.filter(m => m.num === num).sort((a, b) => Math.abs(a.y - cy) - Math.abs(b.y - cy));
+  if (ms.length) openPop({ kind: 'ev', num, mark: ms[0] }, { glide: true });
+}
+function pulse(num) {
+  for (const el of idx.ev.get(num) || []) if (el.classList.contains('evmark')) { el.classList.remove('pulse'); void el.getBBox(); el.classList.add('pulse'); }
+}
+
+// ---------------------------------------------------------------- hover: instant highlight, no popup
+let hlKey = null, hlEls = [], boosts = [];
+function highlight(kind, id) {
+  const key = kind ? `${kind}:${id}` : null;
+  if (key === hlKey) return;
+  for (const el of hlEls) el.classList.remove('hl');
+  for (const b of boosts) b.remove();
+  hlEls = []; boosts = []; hlKey = key;
+  if (!kind) return;
+  hlEls = (kind === 'ep' ? idx.ep.get(id) : kind === 'ev' ? idx.ev.get(+id) : idx.mj.get(+id)) || [];
+  for (const el of hlEls) {
+    el.classList.add('hl');
+    if (el.classList.contains('beam')) {   // a brighter beam: a second copy over it at 0.6 (fill x1.6)
+      const b = el.cloneNode(true); b.removeAttribute('data-dim'); b.classList.remove('hl'); b.classList.add('beam-boost');
+      el.after(b); boosts.push(b);
+    }
+  }
+}
+function hitOf(el) { return el && el.closest ? el.closest('[data-hit]') : null; }
+function hover(e) {
+  if (viewer.gesture || viewer.anim) return;
+  const h = hitOf(e.target);
+  const near = !h || h.dataset.hit === 'arc' ? nearMark(e.clientX, e.clientY) : null;
+  stage.classList.toggle('u-pointer', !!near);
+  if (near) { highlight('ev', near.num); hoverLabel(null); return; }
+  if (!h) { highlight(null); hoverLabel(null); return; }
+  if (h.dataset.hit === 'arc') { highlight(null); hoverLabel(viewer.s < S.site_hover_label_scale ? data.arcs[h.dataset.arcHit].name : null, e); return; }
+  if (h.dataset.hit === 'ep') {
+    highlight('ep', h.dataset.id);
+    const ep = epById[h.dataset.id];
+    hoverLabel(viewer.s < S.site_hover_label_scale ? `${epNo(ep.n)} · ${sp().later(ep.n) ? 'Unwatched' : ep.title}` : null, e);
+  } else if (h.dataset.hit === 'ev') { highlight('ev', h.dataset.num); hoverLabel(null); }
+  else { highlight('major', +h.dataset.i); hoverLabel(viewer.s < S.site_hover_label_scale ? data.majors[+h.dataset.i].full : null, e); }
+}
+stage.addEventListener('pointerleave', () => { highlight(null); hoverLabel(null); });
+function nearMark(cx, cy) {   // the nearest watched event mark within site_mark_hit screen px of a point
+  const [px, py] = viewer.toPoster(cx, cy), R = S.site_mark_hit / viewer.s, st = sp();
+  let best = null, bd = Infinity;
+  for (const m of data.marks) {
+    if (st.later(m.first)) continue;
+    const d = Math.max(0, Math.hypot(px - m.x, py - m.y) - m.r);
+    if (d <= R && d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+function hoverLabel(text, e) {
+  const l = $('#hover-label');
+  if (!text) { l.hidden = true; return; }
+  l.textContent = text; l.hidden = false;
+  l.style.transform = `translate(${e.clientX + 14}px,${e.clientY + 16}px)`;
+}
+
+// ---------------------------------------------------------------- taps and clicks
+// A mouse click opens what's under it. A tap picks the nearest target within site_tap_radius, marks first on a tie.
+function tap(target, e) {
+  closeTransient();
+  let hit = null;
+  if (e.pointerType === 'mouse') {
+    const h = hitOf(target), near = !h || h.dataset.hit === 'arc' ? nearMark(e.clientX, e.clientY) : null;
+    if (near) hit = { kind: 'ev', num: near.num, mark: near };
+    else if (h) hit = hitFromEl(h, e);
+  } else hit = nearestHit(e.clientX, e.clientY);
+  if (!hit) { closePop(); unfocusArc(); return false; }
+  if (hit.kind === 'arc') { closePop(); focusArc(hit.arc); return true; }
+  openPop(hit, { glide: phone });
+  return true;
+}
+function hitFromEl(h, e) {
+  if (h.dataset.hit === 'arc') return { kind: 'arc', arc: h.dataset.arcHit };
+  if (h.dataset.hit === 'ep') return { kind: 'ep', id: h.dataset.id };
+  if (h.dataset.hit === 'major') return { kind: 'major', i: +h.dataset.i };
+  const num = +h.dataset.num, [px, py] = viewer.toPoster(e.clientX, e.clientY);
+  const mark = data.marks.filter(m => m.num === num).sort((a, b) => Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py))[0];
+  return { kind: 'ev', num, mark };
+}
+function rectDist(px, py, x0, y0, x1, y1) { return Math.hypot(Math.max(x0 - px, 0, px - x1), Math.max(y0 - py, 0, py - y1)); }
+function nearestHit(cx, cy) {
+  const [px, py] = viewer.toPoster(cx, cy), s = viewer.s, R = S.site_tap_radius / s, st = sp();
+  const cands = [];
+  for (const m of data.marks) {
+    if (st.later(m.first)) continue;   // later marks are hidden or veiled, never opened
+    const d = Math.max(0, Math.hypot(px - m.x, py - m.y) - m.r);
+    if (d <= R) cands.push({ d, pr: 0, hit: { kind: 'ev', num: m.num, mark: m } });
+  }
+  data.majors.forEach((m, i) => {
+    if (st.later(m.first)) return;
+    for (const y of m.node_ys) {   // the diamond: |dx| + |dy| <= its half-diagonal
+      const d = Math.max(0, (Math.abs(px - m.x) + Math.abs(py - y) - S.event_node * Math.SQRT1_2) * Math.SQRT1_2);
+      if (d <= R) cands.push({ d, pr: 1, hit: { kind: 'major', i } });
+    }
+    const d = rectDist(px, py, m.lo, m.y - m.h / 2, m.lo + m.w, m.y + m.h / 2);
+    if (d <= R) cands.push({ d, pr: 1, hit: { kind: 'major', i } });
+  });
+  for (const e of data.episodes) {
+    if (hiddenN(e.n)) continue;
+    const ly = lineY[e.creator], P = S.point / 2;
+    const dp = rectDist(px, py, e.x - P, ly - P, e.x + P, ly + P);
+    if (dp <= R) cands.push({ d: dp, pr: 2, hit: { kind: 'ep', id: e.id } });
+    const dc = rectDist(px, py, e.L, e.top, e.L + S.card_w, e.top + e.h);
+    if (dc <= R) cands.push({ d: dc, pr: 3, hit: { kind: 'ep', id: e.id } });
+  }
+  for (const b of data.brackets) {   // brackets last: a tap on one focuses its arc
+    if (!b.members.some(([n]) => !st.later(n))) continue;
+    const d = Math.min(rectDist(px, py, b.lo, b.y - S.bracket_tick, b.hi, b.y + S.bracket_tick), rectDist(px, py, b.lx, b.y - b.h / 2, b.lx + b.lw, b.y + b.h / 2));
+    if (d <= R) cands.push({ d, pr: 4, hit: { kind: 'arc', arc: b.arc } });
+  }
+  const tie = 2 / s;   // within 2 screen px counts as a tie
+  cands.sort((a, b) => (Math.abs(a.d - b.d) < tie ? a.pr - b.pr : a.d - b.d));
+  return cands.length ? cands[0].hit : null;
+}
+
+// ---------------------------------------------------------------- popups: beside their anchor, following it
+let popState = null;
+const epNo = n => 'E' + String(n).padStart(3, '0');
+const ytUrl = ep => ep.youtube ? `https://www.youtube.com/watch?v=${encodeURIComponent(ep.youtube)}` : null;
+const arcColor = id => (id && (settings.arcColors[id] || theme.arcs[id])) || theme.colors.no_arc;
+
+function anchorBox(st) {   // poster px
+  if (st.kind === 'ep') { const e = epById[st.id]; return [e.L, e.top, e.L + S.card_w, e.top + e.h]; }
+  if (st.kind === 'ev') { const m = st.mark; return [m.x - m.r, m.y - m.r, m.x + m.r, m.y + m.r]; }
+  const m = data.majors[st.i]; return [m.lo, m.y - m.h / 2, m.lo + m.w, m.y + m.h / 2];
+}
+
+function openPop(hit, { glide = false, nav = false, fly = false, instant = false } = {}) {
+  closeTransient();
+  endZoomEdit(false);
+  if (hit.kind === 'ev' && !hit.mark) hit.mark = data.marks.find(m => m.num === hit.num);
+  popState = { ...hit, s0: viewer.s, holdUntil: 0 };
+  pop.innerHTML = (hit.kind === 'ep' ? epHTML(epById[hit.id]) : hit.kind === 'ev' ? evHTML(evByNum[hit.num]) : majorHTML(data.majors[hit.i])) +
+    '<button class="u-popx" aria-label="Close">×</button><div class="u-arrow"></div>';
+  pop.hidden = false; body.classList.add('u-popopen');
+  popClass();
+  popState.w = pop.offsetWidth; popState.h = pop.offsetHeight;
+  highlight(hit.kind, hit.kind === 'ep' ? hit.id : hit.kind === 'ev' ? hit.num : hit.i);
+  if (hit.kind === 'ev') pulse(hit.num);
+  if (hit.kind === 'ep') unselectInDock(); else selectInDock(itemKey(hit));
+  if (fly) flyTo(popState, instant);
+  else if (glide || nav) glideTo(popState, nav);
+  setHash(popHash(hit));
+  placePop();
+}
+// phone: a bottom sheet; landscape: a side panel beside the button column; desktop: beside its anchor, following it
+function popClass() {
+  pop.classList.toggle('u-sheetpop', phone && !land); pop.classList.toggle('u-sidepop', land);
+  if (phone) pop.style.transform = '';
+}
+function freeArea(st) {   // the part of the poster's area an open popup leaves for its anchor
+  const a = viewer.area();
+  if (land) return { ...a, x1: Math.max(a.x0 + 80, innerWidth - colW() - st.w - 8) };
+  return phone ? { ...a, y1: innerHeight - st.h } : a;
+}
+function relayoutPop() {   // after a rotation: the popup's new form, its anchor brought into view
+  const st = popState;
+  popClass();
+  st.w = pop.offsetWidth; st.h = pop.offsetHeight; st.s0 = viewer.s;
+  glideTo(st, false, true);
+  placePop();
+}
+function flyTo(st, instant) {   // search results and deep links: centred at site_search_scale (site_search_scale_land)
+  const b = anchorBox(st), f = freeArea(st);
+  const t = viewer.centreOn((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, land ? S.site_search_scale_land : S.site_search_scale,
+    (f.y0 + Math.max(f.y0 + 40, f.y1)) / 2, (f.x0 + f.x1) / 2);
+  const ms = instant ? 0 : 700;
+  st.holdUntil = performance.now() + ms + 120;
+  st.s0 = viewer.clampS(t.s);
+  if (instant) viewer.set(t.s, t.tx, t.ty); else viewer.animateTo(t, ms);
+}
+
+function glideTo(st, nav, whole = false) {   // bring the anchor (whole: all of it) into view: centred (or beside a phone's sheet or side panel), zoomed in to at least site_nav_min_scale
+  const b = anchorBox(st), f = freeArea(st);
+  const s = nav ? Math.max(viewer.s, S.site_nav_min_scale) : viewer.s;
+  const sx = viewer.tx + (b[0] + b[2]) / 2 * s, sy0 = viewer.ty + b[1] * viewer.s, sy1 = viewer.ty + b[3] * viewer.s;
+  const sxIn = whole ? viewer.tx + b[0] * s >= f.x0 && viewer.tx + b[2] * s <= f.x1 : sx > f.x0 + 20 && sx < f.x1 - 20;
+  if (!nav && sxIn && sy0 > f.y0 && sy1 < f.y1) return;   // already in sight
+  const cy = (f.y0 + Math.max(f.y0 + 40, f.y1)) / 2;
+  const t = viewer.centreOn((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, s, cy, (f.x0 + f.x1) / 2);
+  const ms = nav ? S.site_nav_ms : 300;
+  st.holdUntil = performance.now() + ms + 80;   // no closing while the camera brings it in
+  st.s0 = t.s;
+  viewer.animateTo(t, ms);
+}
+
+function placePop() {
+  const st = popState; if (!st) return;
+  const b = anchorBox(st), [x0, y0] = viewer.toScreen(b[0], b[1]), [x1, y1] = viewer.toScreen(b[2], b[3]);
+  const vw = innerWidth, vh = innerHeight, held = performance.now() < st.holdUntil;
+  if (!held) {
+    const z = viewer.s / st.s0;
+    if (x1 < 0 || x0 > vw || y1 < 0 || y0 > vh || z > S.site_popup_close_zoom || z < 1 / S.site_popup_close_zoom) return closePop(false, true);
+  }
+  if (phone) return;
+  const w = st.w, h = st.h, g = S.site_popup_gap + S.site_popup_arrow, m = 8, top = insets().top;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const clampY = y => Math.min(vh - m - h, Math.max(top, y)), clampX = x => Math.min(vw - m - w, Math.max(m, x));
+  let side, x, y;
+  if (x1 + g + w <= vw - m) { side = 'right'; x = x1 + g; y = clampY(cy - h / 2); }
+  else if (x0 - g - w >= m) { side = 'left'; x = x0 - g - w; y = clampY(cy - h / 2); }
+  else if (y1 + g + h <= vh - m) { side = 'below'; y = y1 + g; x = clampX(cx - w / 2); }
+  else if (y0 - g - h >= top) { side = 'above'; y = y0 - g - h; x = clampX(cx - w / 2); }
+  else {   // no side has room: the roomier of left and right, over the edge of the anchor at worst
+    side = vw - x1 > x0 ? 'right' : 'left';
+    x = side === 'right' ? clampX(x1 + g) : clampX(x0 - g - w); y = clampY(cy - h / 2);
+  }
+  pop.dataset.side = side;
+  pop.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
+  const ar = pop.lastElementChild;
+  if (side === 'right' || side === 'left') ar.style.cssText = `top:${Math.min(h - 22, Math.max(8, cy - y - 7)).toFixed(1)}px`;
+  else ar.style.cssText = `left:${Math.min(w - 22, Math.max(8, cx - x - 7)).toFixed(1)}px`;
+}
+
+function closePop(keepHash = false, auto = false) {   // auto: the camera moved it out of sight; the dock keeps its selection
+  if (!popState) return;
+  popState = null; pop.hidden = true; pop.innerHTML = '';
+  body.classList.remove('u-popopen');
+  highlight(null);
+  if (!auto) unselectInDock();
+  if (!keepHash) setHash(atHome() ? '' : viewHash(viewer.view()));
+}
+
+// previous / next: episodes along the same protagonist's line in story order; events by number; majors by x
+function sequence(st) {
+  if (st.kind === 'ep') { const p = epById[st.id].creator; return { list: lineEps[p].filter(e => !hiddenN(e.n)).map(e => ({ kind: 'ep', id: e.id })), label: `${p}'s line`, at: x => x.id === st.id }; }
+  if (st.kind === 'ev') return { list: data.events.filter(e => !sp().later(e.first)).map(e => ({ kind: 'ev', num: e.num })), label: 'Events', at: x => x.num === st.num };
+  return { list: majorsByX.filter(m => !sp().later(m.first)).map(m => ({ kind: 'major', i: m.i })), label: 'Major events', at: x => x.i === st.i };
+}
+function navStep(d) {
+  if (!popState) return;
+  const sq = sequence(popState), k = sq.list.findIndex(sq.at), next = sq.list[k + d];
+  if (!next) return;
+  if (next.kind === 'ev') {   // keep to the same line when the next event is on it
+    const p = popState.mark && popState.mark.p;
+    next.mark = data.marks.find(m => m.num === next.num && m.p === p) || data.marks.find(m => m.num === next.num);
+  }
+  openPop(next, { nav: true });
+}
+function navHTML(st) {
+  const sq = sequence(st), k = sq.list.findIndex(sq.at);
+  return `<div class="u-nav"><button data-nav="-1"${k <= 0 ? ' disabled' : ''}>◀ Previous</button><span>${esc(sq.label)}</span>` +
+    `<button data-nav="1"${k < 0 || k >= sq.list.length - 1 ? ' disabled' : ''}>Next ▶</button></div>`;
+}
+
+function epHTML(ep) {
+  const later = sp().later(ep.n), yt = ytUrl(ep);
+  const st = { kind: 'ep', id: ep.id };
+  if (later) return `<div class="u-pophead"><span class="u-badge" style="background:${theme.colors.no_arc}">${epNo(ep.n)}</span><strong>Unwatched · ${esc(ep.creator)}</strong></div>` +
+    `<p class="u-muted">You haven't watched this one yet.</p>` + navHTML(st);
+  const arc = ep.arc_name ? ` · <button class="u-link" data-arc="${esc(ep.arc)}">${esc(ep.arc_name)}</button>` : '';
+  return `<div class="u-pophead"><span class="u-badge" style="background:${arcColor(ep.arc)}">${epNo(ep.n)}</span><strong>${esc(ep.title)}</strong></div>` +
+    `<div class="u-popmeta">${esc(ep.creator)} · ${esc(ep.date)} · ${esc(ep.dur)}${arc}</div>` +
+    (ep.summary ? `<p>${esc(ep.summary)}</p>` : '<p class="u-muted">No summary yet.</p>') +
+    (yt ? `<a class="u-watch" href="${yt}" target="_blank" rel="noopener">▶ Watch on YouTube</a>` : '') + navHTML(st);
+}
+function epList(ids) {
+  const s = sp();
+  return ids.map(i => epById[i]).filter(Boolean).sort((a, b) => a.n - b.n).map(ep => s.later(ep.n)
+    ? `<li class="u-muted">${epNo(ep.n)} · not watched yet</li>`
+    : `<li><button data-go="${ep.id}">${epNo(ep.n)} · ${esc(ep.title)}</button>${ytUrl(ep) ? `<a href="${ytUrl(ep)}" target="_blank" rel="noopener" title="Watch on YouTube" aria-label="Watch on YouTube">▶</a>` : ''}</li>`).join('');
+}
+function evHTML(ev) {
+  return `<div class="u-pophead"><span class="u-badge tier-${ev.tier}">#${ev.num}</span><strong>${esc(ev.name)}</strong></div>` +
+    `<div class="u-popmeta">${TIER[ev.tier]} · ${ev.protags.map(esc).join(', ')}</div>` +
+    `<p>${esc(ev.desc || ev.short)}</p><ul class="u-eps">${epList(ev.episodes)}</ul>` + navHTML({ kind: 'ev', num: ev.num });
+}
+function majorHTML(ev) {
+  const i = data.majors.indexOf(ev);
+  return `<div class="u-pophead"><span class="u-badge-dia">${diamondSVG(18)}</span><strong>${esc(ev.full)}</strong></div>` +
+    `<div class="u-popmeta">Major event · ${ev.protags.map(esc).join(', ')}</div>` + (ev.desc ? `<p>${esc(ev.desc)}</p>` : '') +
+    `<ul class="u-eps">${epList(ev.episodes)}</ul>` + navHTML({ kind: 'major', i });
+}
+
+pop.addEventListener('click', e => {
+  if (e.target.closest('.u-popx')) return closePop();
+  const nav = e.target.closest('[data-nav]');
+  if (nav) return navStep(+nav.dataset.nav);
+  const go = e.target.closest('[data-go]');
+  if (go) return openPop({ kind: 'ep', id: go.dataset.go }, { nav: true });
+  const arc = e.target.closest('[data-arc]');
+  if (arc) { const a = arc.dataset.arc; closePop(); focusArc(a); }
+});
+swipeToClose(pop, closePop, () => phone && !land);
+
+// ---------------------------------------------------------------- search
+function goToResult(r) {
+  closeDialogs();
+  if (r.kind === 'arc') { if (focusArcId === r.arc) applyFocus(r.arc, true); else focusArc(r.arc); return; }
+  if (r.kind === 'line') {
+    closePop();
+    const a = viewer.area(), s = Math.max(viewer.s, fitScale()), cx = ((a.x0 + a.x1) / 2 - viewer.tx) / viewer.s;
+    viewer.animateTo(viewer.centreOn(cx, lineY[r.p], s, (a.y0 + a.y1) / 2), 500);
+    return;
+  }
+  openPop(r.kind === 'ep' ? { kind: 'ep', id: r.id } : r.kind === 'ev' ? { kind: 'ev', num: r.num } : { kind: 'major', i: r.i }, { fly: true });
+}
+function openSearch() { closeDialogs(); closePop(); closeSheet(); search.open(); }
+$('#b-search').addEventListener('click', openSearch);
+$('#b-search2').addEventListener('click', openSearch);
+$('#search').addEventListener('click', e => { if (e.target.id === 'search') search.close(); });
+
+// ---------------------------------------------------------------- arc focus: dim everything else, fly to its brackets
+let focusArcId = null;
+function focusArc(arc, fly = true) {
+  if (focusArcId === arc && fly) return unfocusArc();
+  focusArcId = arc;
+  applyFocus(arc, fly);
+}
+function applyFocus(arc, fly) {
+  const svg = host.firstElementChild;
+  const brs = data.brackets.filter(b => b.arc === arc && b.members.some(([n]) => !hiddenN(n)));
+  if (!brs.length) return unfocusArc();
+  const members = new Set(brs.flatMap(b => b.members.map(([n]) => epByN[n].id)));
+  const evs = new Set(data.events.filter(ev => ev.episodes.some(i => members.has(i))).map(ev => ev.num));
+  for (const el of idx.dim) {
+    const d = el.dataset;
+    const inF = d.arc === arc || (d.ep && members.has(d.ep)) || (d.num && evs.has(+d.num)) || (d.stem && evs.has(+d.stem));
+    el.classList.toggle('in-focus', !!inF);
+  }
+  svg.classList.add('focusing');
+  const chip = $('#focus-chip');
+  chip.textContent = `✕ ${data.arcs[arc].name}`; chip.hidden = false;
+  $$('.u-lgarc').forEach(b => b.classList.toggle('on', b.dataset.arc === arc));
+  if (!fly) return;
+  const eps = [...members].map(i => epById[i]);
+  const x0 = Math.min(...brs.map(b => b.lo), ...eps.map(e => e.L)), x1 = Math.max(...brs.map(b => b.hi), ...eps.map(e => e.L + S.card_w));
+  const y0 = Math.min(...brs.map(b => b.y - b.h), ...eps.map(e => e.top)), y1 = Math.max(...brs.map(b => b.y + b.h), ...eps.map(e => e.top + e.h));
+  viewer.focusBox(x0, y0, x1, y1, 0.9);
+}
+function unfocusArc() {
+  focusArcId = null;
+  const svg = host.firstElementChild;
+  if (svg) svg.classList.remove('focusing');
+  $('#focus-chip').hidden = true;
+  $$('.u-lgarc').forEach(b => b.classList.remove('on'));
+}
+$('#focus-chip').addEventListener('click', unfocusArc);
+
+// ---------------------------------------------------------------- legend: the ? panel
+function buildLegend() {
+  const lg = data.legend;
+  $('#lg-rows').innerHTML = `<p class="u-lgintro">${esc(lg.intro)}</p>` + lg.rows.map(([svg, text]) => svg == null
+    ? `<p class="u-lgnote">${esc(text)}</p>` : `<div class="u-lgrow">${svg}<span>${esc(text)}</span></div>`).join('');
+  fillLegendArcs();
+}
+function fillLegendArcs() {
+  const visible = new Set(data.brackets.filter(b => b.members.some(([n]) => !hiddenN(n))).map(b => b.arc));
+  $('#lg-arclist').innerHTML = [...data.legend.arcs, ...data.legend.sagas].filter(a => visible.has(a)).map(a => {
+    const col = `var(--a-${a})`;
+    return `<button class="u-lgarc${a === focusArcId ? ' on' : ''}" data-arc="${a}" style="color:${col}"><svg viewBox="0 0 120 30"><g style="stroke:${col}" stroke-width="8">` +
+      `<line x1="4" y1="15" x2="116" y2="15"/><line x1="4" y1="3" x2="4" y2="27"/><line x1="116" y1="3" x2="116" y2="27"/></g></svg>${esc(data.arcs[a].short.toUpperCase())}</button>`;
+  }).join('');
+  if (viewer) updateLegendInView(viewer.view());
+}
+$('#lg-arclist').addEventListener('click', e => {
+  const b = e.target.closest('.u-lgarc'); if (!b) return;
+  if (phone) closeDialogs();
+  focusArc(b.dataset.arc);
+});
+function updateLegendInView(v) {
+  const inView = new Set(data.brackets.filter(b => b.hi > v.x0 && b.lo < v.x1 && b.y > v.y0 && b.y < v.y1).map(b => b.arc));
+  for (const b of $$('.u-lgarc')) b.classList.toggle('inview', inView.has(b.dataset.arc));
+}
+
+// ---------------------------------------------------------------- dialogs, menu, toolbar
+function closeDialogs() { for (const p of $$('.u-dlg')) p.hidden = true; if (search) search.close(); }
+function closeTransient() { closeDialogs(); closeSheet(); }
+function openPanel(id) {
+  const p = $('#' + id), was = !p.hidden;
+  closeDialogs(); closePop(); closeSheet();
+  if (was) return;
+  p.hidden = false;
+  if (id === 'spoilers') scrollStripToSelection();
+  if (id === 'export') fillExport();
+  const f = p.querySelector('input:not([hidden]), button:not(.u-close), summary');
+  if (f && !phone) f.focus({ preventScroll: true });
+}
+document.addEventListener('click', e => {
+  const o = e.target.closest('[data-open]');
+  if (o) { e.preventDefault(); openPanel(o.dataset.open); }
+});
+$$('.u-dlg .u-close').forEach(b => b.addEventListener('click', () => { b.closest('.u-dlg').hidden = true; }));
+const fit = () => viewer.animateTo(viewer.home());
+$('#b-fit').onclick = fit; $('#b-fit2').onclick = fit;
+const zoomBy = f => viewer.zoomAt(f, innerWidth / 2, innerHeight / 2, true);
+$('#b-in').onclick = () => zoomBy(1.5); $('#b-out').onclick = () => zoomBy(1 / 1.5);
+
+addEventListener('keydown', e => {
+  if (!viewer) return;
+  if (e.key === 'Escape' && !$('#search').hidden) { search.close(); return; }
+  if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); return openSearch(); }
+  if (e.target.closest('input, select, textarea, [contenteditable]')) return;
+  if (e.key === '/') { e.preventDefault(); return openSearch(); }
+  if (e.key === 'Escape') {
+    if (popState) closePop();
+    else if (!evSheet.hidden) closeSheet();
+    else if ($$('.u-dlg').some(p => !p.hidden)) closeDialogs();
+    else if (focusArcId) unfocusArc();
+    return;
+  }
+  if (popState && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); return navStep(e.key === 'ArrowLeft' ? -1 : 1); }
+  if (e.target.closest('button, a, summary') && (e.key === 'Enter' || e.key === ' ')) return;
+  if (viewer.key(e)) e.preventDefault();
+});
+
+function swipeToClose(el, close, when = () => true) {   // a downward swipe on a bottom sheet closes it
+  let y0 = null, scroll0 = 0;
+  el.addEventListener('pointerdown', e => { if (when() && e.pointerType !== 'mouse') { y0 = e.clientY; scroll0 = el.scrollTop; } });
+  el.addEventListener('pointerup', e => { if (y0 != null && e.clientY - y0 > 60 && scroll0 <= 0) close(); y0 = null; });
+  el.addEventListener('pointercancel', () => { y0 = null; });
+  el.addEventListener('touchmove', e => { if (y0 != null && el.scrollTop <= 0 && e.touches[0].clientY > y0) e.preventDefault(); }, { passive: false });
+}
+
+// ---------------------------------------------------------------- spoilers
+function updateSpoilerUI() {
+  const s = settings.spoiler;
+  const b = $('#b-spoil');
+  b.textContent = s.on ? `Spoilers: up to ${epNo(s.upTo)}` : 'Spoilers: off';
+  b.classList.toggle('on', s.on);
+  $('#b-eye').classList.toggle('on', s.on);
+  const chip = $('#eye-chip'); chip.hidden = !s.on; chip.textContent = `Up to ${epNo(s.upTo)}`;
+}
+function buildSpoilers() {
+  const s = settings.spoiler, strip = $('#sp-strip');
+  strip.innerHTML = [...data.episodes].sort((a, b) => a.n - b.n).map(e => `<button class="u-ep" data-n="${e.n}" role="option" title="${epNo(e.n)} · ${esc(e.title)}">` +
+    `<img class="u-th" src="${thumbs[e.id] || ''}" alt="" loading="lazy"><span class="u-n">${epNo(e.n)}</span><img class="u-cf" src="${CONFIG.faces}${esc(e.creator)}.png" alt="${esc(e.creator)}"></button>`).join('');
+  const on = $('#sp-on');
+  on.checked = s.on;
+  const sync = () => {
+    $('#sp-body').classList.toggle('off', !s.on);
+    for (const b of strip.children) { const n = +b.dataset.n; b.classList.toggle('sel', n === s.upTo); b.classList.toggle('after', s.on && n > s.upTo); b.setAttribute('aria-selected', n === s.upTo); }
+    const ep = epByN[s.upTo];
+    $('#sp-pick').textContent = ep ? `${epNo(ep.n)} · ${ep.title} (${ep.creator})` : '';
+    for (const b of $$('#sp-mode button')) b.setAttribute('aria-checked', b.dataset.mode === s.mode);
+  };
+  buildSpoilers.sync = sync;
+  sync();
+  let t = null;
+  const apply = () => { sync(); saveSettings(); clearTimeout(t); t = setTimeout(() => { closePop(); draw(); fillLegendArcs(); }, 60); };
+  on.onchange = () => { s.on = on.checked; apply(); };
+  strip.onclick = e => { const b = e.target.closest('.u-ep'); if (!b) return; s.upTo = +b.dataset.n; if (!s.on) { s.on = true; on.checked = true; } apply(); };
+  $('#sp-mode').onclick = e => { const b = e.target.closest('[data-mode]'); if (!b) return; s.mode = b.dataset.mode; apply(); };
+}
+function scrollStripToSelection() {
+  const strip = $('#sp-strip'), b = strip.querySelector(`[data-n="${settings.spoiler.upTo}"]`);
+  for (const img of strip.querySelectorAll('img.u-th')) if (!img.getAttribute('src') && thumbs[epByN[+img.parentElement.dataset.n].id]) img.src = thumbs[epByN[+img.parentElement.dataset.n].id];
+  if (b) strip.scrollLeft = b.offsetLeft - strip.clientWidth / 2 + b.offsetWidth / 2;
+}
+
+// ---------------------------------------------------------------- settings: background and arc colours
+function buildSettings() {
+  const box = $('#arc-colors');
+  box.innerHTML = [...data.legend.arcs, ...data.legend.sagas].map(a => `<label class="u-arcrow"><input type="color" data-arc="${a}" value="${arcColor(a)}"><span>${esc(data.arcs[a].short)}</span></label>`).join('');
+  box.oninput = e => {
+    const a = e.target.dataset.arc; if (!a) return;
+    settings.arcColors[a] = e.target.value;
+    host.firstElementChild.style.setProperty(`--a-${a}`, e.target.value);
+    document.documentElement.style.setProperty(`--a-${a}`, e.target.value);
+    saveSettings();
+  };
+  $('#arc-reset').onclick = e => { e.preventDefault(); e.stopPropagation(); settings.arcColors = {}; saveSettings(); setRootColours(); buildSettings(); draw(); $('#arc-details').open = true; };
+  const dim = $('#bg-dim');
+  dim.value = settings.bgDim;
+  $('#bg-dim-row').hidden = !bgImage;
+  dim.oninput = () => { settings.bgDim = +dim.value; saveSettings(); $('#bgimg').style.setProperty('--bg-dim', dim.value); };
+  $('#bg-file').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    bgImage = await shrinkImage(f, CONFIG.bgMaxSide);
+    $('#bg-note').textContent = saveBg() ? '' : 'Too big to remember here; it stays for this visit.';
+    $('#bg-dim-row').hidden = false;
+    draw();
+  };
+  $('#bg-clear').onclick = () => { bgImage = null; saveBg(); $('#bg-file').value = ''; $('#bg-note').textContent = ''; $('#bg-dim-row').hidden = true; draw(); };
+}
+
+async function shrinkImage(file, max) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+
+// ---------------------------------------------------------------- PNG export
+function canvasWorks(w, h) {   // the real limit: a canvas this big can be drawn on and read back
+  try {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    if (!x) return false;
+    x.fillStyle = '#ff0000'; x.fillRect(w - 1, h - 1, 1, 1);
+    const ok = x.getImageData(w - 1, h - 1, 1, 1).data[0] === 255;
+    c.width = c.height = 0;
+    return ok;
+  } catch { return false; }
+}
+let exportChoices = null;
+function fillExport() {   // only the sizes this browser can make
+  if (!exportChoices) {
+    exportChoices = [];
+    let probed = false;
+    for (const s of [...CONFIG.exportScales].sort((a, b) => b - a)) {
+      const w = Math.round(data.W * s), h = Math.round(data.H * s);
+      let ok = w <= CONFIG.exportMaxSide && h <= CONFIG.exportMaxSide && w * h <= CONFIG.exportMaxArea;
+      if (ok && !probed) { ok = canvasWorks(w, h); probed = ok; }   // one success means every smaller size works too
+      if (ok) exportChoices.unshift({ s, w, h });
+    }
+  }
+  const best = exportChoices.filter(c => c.w * c.h <= 40e6).pop() || exportChoices[0];
+  $('#ex-sizes').innerHTML = exportChoices.map(c => `<label><input type="radio" name="ex-s" value="${c.s}" ${c === best ? 'checked' : ''}>` +
+    `${c.s}×<small>${c.w.toLocaleString()} × ${c.h.toLocaleString()} px</small></label>`).join('');
+}
+function buildExport() {
+  const btn = $('#ex-go'), label = $('#ex-label'), bar = $('#ex-bar');
+  btn.onclick = async () => {
+    const s = +(document.querySelector('[name="ex-s"]:checked') || {}).value;
+    if (!s) return;
+    btn.disabled = true;
+    const progress = (txt, f) => { label.textContent = txt; if (f != null) bar.style.width = `${(100 * f).toFixed(0)}%`; };
+    try {
+      const tr = $('#ex-transparent').checked;
+      const blob = await exportPNG(s, tr, progress);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `unstable-universe-timeline-E${data.ep_first}-E${data.ep_last}-${s}x${tr ? '-transparent' : ''}.png`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      progress(`Saved ✓ (${(blob.size / 1e6).toFixed(0)} MB)`, 1);
+    } catch (err) {
+      progress(`Failed: try a smaller size`, 0);
+      console.error(err);
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => { label.textContent = 'Save PNG'; bar.style.width = '0'; }, 2500);
+    }
+  };
+}
+
+const toDataURL = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+async function inlineUrls(urls) {
+  const out = {};
+  await Promise.all(Object.entries(urls).map(async ([k, u]) => { out[k] = await fetch(u).then(r => r.blob()).then(toDataURL); }));
+  return out;
+}
+
+export async function exportPNG(scale, transparent, progress = () => {}) {
+  const st = sp();
+  const eps = data.episodes.filter(e => !(st.later(e.n) && st.mode === 'hide'));
+  progress('Preparing…', 0);
+  const th = {};
+  await Promise.all(eps.map(async e => { if (thumbBlobs[e.id]) th[e.id] = await toDataURL(thumbBlobs[e.id]); }));
+  const faceData = await inlineUrls(faces());
+  const fontCss = [];
+  for (const f of Object.values(theme.fonts)) {
+    const d = await fetch(CONFIG.fonts + f.file).then(r => r.blob()).then(toDataURL);
+    const mime = f.file.endsWith('.woff2') ? 'font/woff2' : 'font/ttf';
+    fontCss.push(`@font-face{font-family:'${f.family}';src:url(${d.replace(/^data:[^;,]*/, `data:${mime}`)})${f.family === theme.fonts.text.family ? ';font-weight:300 900' : ''}}`);
+  }
+  progress('Drawing 0%', 0);
+  const svg = renderPoster(data, theme, { thumbs: th, faces: faceData, fontFaces: fontCss.join(''), transparent, settings,
+    background: transparent ? null : bgImage, bgDim: settings.bgDim, creditLine: creditLine() });
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('the browser could not draw the poster')); img.src = url; });
+    await new Promise(r => setTimeout(r, 50));
+    const W = Math.round(data.W * scale), H = Math.round(data.H * scale);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    if (!ctx) throw new Error('no canvas this big');
+    // in vertical strips: one huge drawImage of an SVG can come out blank in Chrome
+    const strip = Math.max(256, Math.floor(16e6 / H));
+    for (let x = 0; x < W; x += strip) {
+      const w = Math.min(strip, W - x);
+      ctx.drawImage(img, x / scale, 0, w / scale, data.H, x, 0, w, H);
+      const f = (x + w) / W;
+      progress(`Drawing ${Math.round(100 * f)}%`, 0.9 * f);
+      await new Promise(r => setTimeout(r, 0));
+    }
+    progress('Encoding…', 0.95);
+    const blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('PNG encoding ran out of memory')), 'image/png'));
+    c.width = c.height = 0;
+    return blob;
+  } finally { URL.revokeObjectURL(url); }
+}
+window.__exportPNG = (s, t) => exportPNG(s, t);
+window.__app = () => ({ data, settings, viewer, draw, saveSettings, openPop, closePop, focusArc, unfocusArc, nearestHit, highlight, search, zoomPct, fitScale, popState });
+
+start().catch(err => { $('#load-text').textContent = 'Could not load the timeline: ' + err.message; console.error(err); });

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Unstable Universe Timeline</title>
+<meta name="description" content="An interactive story timeline of the Unstable Universe (Unstable SMP) series: every canon episode, arc and event in story order.">
+<meta name="theme-color" content="#05061a">
+<!-- link previews; build_site.py fills in https://unstable-atlas.github.io/timeline/ -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Unstable Atlas">
+<meta property="og:title" content="Unstable Universe Timeline">
+<meta property="og:description" content="Every canon episode, arc and event of the Unstable Universe (Unstable SMP) in story order, on one interactive map.">
+<meta property="og:url" content="https://unstable-atlas.github.io/timeline/">
+<meta property="og:image" content="https://unstable-atlas.github.io/timeline/preview.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Unstable Universe story timeline: four protagonists' storylines with a card for every episode">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Unstable Universe Timeline">
+<meta name="twitter:description" content="Every canon episode, arc and event of the Unstable Universe (Unstable SMP) in story order, on one interactive map.">
+<meta name="twitter:image" content="https://unstable-atlas.github.io/timeline/preview.jpg">
+<link rel="canonical" href="https://unstable-atlas.github.io/timeline/">
+<link rel="stylesheet" href="css/app.css">
+<link rel="preload" href="data/poster.json" as="fetch" crossorigin>
+<link rel="preload" href="data/theme.json" as="fetch" crossorigin>
+</head>
+<body>
+<!-- Class names here start with u- because the poster's own stylesheet (inside its SVG) applies to the whole page. -->
+<div id="stage">
+  <div id="sky"></div>
+  <div id="starfield"></div>
+  <div id="bgimg" hidden></div>
+  <div id="poster" role="img" aria-label="Story timeline poster"></div>
+</div>
+
+<div id="rail" class="u-pane" aria-label="Storylines"></div>
+
+<div id="dock" class="u-pane" hidden><div id="dock-row" aria-label="Events"></div></div>
+<section id="events-sheet" class="u-sheet" hidden aria-label="Events">
+  <div class="u-handle"></div>
+  <div class="u-sheet-head"><h2 class="u-h">Events</h2></div>
+  <div id="events-list"></div>
+</section>
+<!-- one toggle for the dock (desktop) and the events sheet (phone): the same button in the same place, open or closed -->
+<button id="dock-btn" class="u-pillbtn" aria-expanded="false" aria-controls="dock events-sheet"><span>Events</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+
+<header id="bar">
+  <div class="u-seg u-desk" id="zoomctl">
+    <button id="b-fit" title="Fit the whole timeline (0)" aria-label="Fit"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <button id="b-out" title="Zoom out (−)" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+    <button id="zoom-pct" title="Zoom: 100% fits all four lines. Click to type a value." aria-label="Zoom level">100%</button><input id="zoom-input" type="text" inputmode="decimal" aria-label="Zoom in percent" hidden>
+    <button id="b-in" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
+  </div>
+  <span class="u-grow"></span>
+  <button id="b-search" class="u-desk u-icon" title="Search (/)" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
+  <button id="b-spoil" class="u-desk u-pillbtn" data-open="spoilers">Spoilers: off</button>
+  <button class="u-desk u-icon" data-open="settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg></button>
+  <button class="u-desk u-icon" data-open="export" title="Save as PNG" aria-label="Save as PNG"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg></button>
+  <button id="b-search2" class="u-phone u-icon" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
+  <div class="u-phone u-eyewrap">
+    <button id="b-eye" class="u-icon" data-open="spoilers" aria-label="Spoilers"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+    <span id="eye-chip" hidden></span>
+  </div>
+  <button class="u-phone u-icon" data-open="menu" aria-label="More"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+</header>
+
+<button id="b-legend" class="u-fab u-icon" data-open="legend" title="Legend: how to read the map" aria-label="Legend"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="4" height="4" rx=".5"/><path d="M11 6.5h9.5"/><path d="M5.5 10.5l2 3.5h-4z"/><path d="M11 12h9.5"/><circle cx="5.5" cy="18" r="2"/><path d="M11 18h9.5"/></svg></button>
+<button id="b-fit2" class="u-fab u-icon u-phone" title="Fit" aria-label="Fit"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+<button id="focus-chip" class="u-pillbtn" hidden></button>
+<div id="hover-label" hidden></div>
+<div id="pop" role="dialog" aria-live="polite" hidden></div>
+
+<nav class="u-dlg u-menu" id="menu" hidden>
+  <button data-open="settings">Settings</button>
+  <button data-open="export">Save as PNG</button>
+  <button data-open="credits">Credits</button>
+</nav>
+
+<section class="u-dlg" id="spoilers" role="dialog" aria-label="Spoilers" hidden>
+  <button class="u-close" aria-label="Close">×</button>
+  <h2 class="u-h">Spoilers</h2>
+  <label class="u-switch"><input type="checkbox" id="sp-on"><span class="u-track"></span>Hide what I haven't watched</label>
+  <div id="sp-body">
+    <div class="u-label">Last episode I watched</div>
+    <div id="sp-strip" role="listbox" aria-label="Last episode watched"></div>
+    <div id="sp-pick" class="u-hint"></div>
+    <div class="u-segctl" id="sp-mode" role="radiogroup">
+      <button data-mode="blur" role="radio">Blur</button><button data-mode="hide" role="radio">Hide</button>
+    </div>
+  </div>
+</section>
+
+<section class="u-dlg" id="settings" role="dialog" aria-label="Settings" hidden>
+  <button class="u-close" aria-label="Close">×</button>
+  <h2 class="u-h">Background</h2>
+  <div class="u-row">
+    <label class="u-btn" for="bg-file">Choose image…</label><input type="file" id="bg-file" accept="image/*" hidden>
+    <button id="bg-clear" class="u-btn">Starfield</button>
+  </div>
+  <label class="u-row" id="bg-dim-row">Darken <input type="range" id="bg-dim" min="0" max="0.9" step="0.05"></label>
+  <div class="u-hint" id="bg-note"></div>
+  <details id="arc-details">
+    <summary><span>Customise arc colours</span><button id="arc-reset" class="u-btn u-small">Reset</button></summary>
+    <div id="arc-colors"></div>
+  </details>
+  <div class="u-foot u-desk"><button class="u-link" data-open="credits">Credits</button></div>
+</section>
+
+<section class="u-dlg" id="export" role="dialog" aria-label="Save as PNG" hidden>
+  <button class="u-close" aria-label="Close">×</button>
+  <h2 class="u-h">Save as PNG</h2>
+  <div id="ex-sizes"></div>
+  <label class="u-switch"><input type="checkbox" id="ex-transparent"><span class="u-track"></span>Transparent background</label>
+  <button id="ex-go" class="u-btn u-primary"><span id="ex-bar"></span><span id="ex-label">Save PNG</span></button>
+</section>
+
+<section class="u-dlg" id="credits" role="dialog" aria-label="Credits" hidden>
+  <button class="u-close" aria-label="Close">×</button>
+  <h2 class="u-h">Credits</h2>
+  <p>The Unstable Universe (Unstable SMP) is made by <strong>Wemmbu</strong>, <strong>ParrotX2</strong>, <strong>SpokeIsHere</strong> and <strong>FlameFrags</strong>, with many more players. Every episode card links to its video; thumbnails belong to their creators.</p>
+  <p>Story order, summaries and events are based on the <a href="https://unstable-universe-mc.fandom.com/wiki/Unstable_Universe_Wiki" target="_blank" rel="noopener">Unstable Universe Wiki</a>, whose text is licensed under <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener">CC BY-SA 3.0</a>. This timeline's text is shared under the same licence.</p>
+  <p>Pixel font: Press Start 2P by CodeMan38; text font: Rubik. Both under the SIL Open Font License.</p>
+  <p class="u-hint">A fan project, not affiliated with the creators.</p>
+</section>
+
+<section class="u-dlg" id="legend" role="dialog" aria-label="Legend" hidden>
+  <button class="u-close" aria-label="Close">×</button>
+  <details id="lg-read"><summary class="u-h">Reading the map</summary><div id="lg-rows"></div></details>
+  <details id="lg-arcs"><summary class="u-h">Arcs</summary><div id="lg-arclist"></div></details>
+</section>
+
+<section id="search" class="u-search" role="dialog" aria-label="Search" hidden>
+  <div class="u-searchbox">
+    <div class="u-qrow"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><input id="q" type="search" placeholder="Episodes, events, arcs, characters" autocomplete="off" spellcheck="false" aria-label="Search"></div>
+    <div class="u-results" role="listbox"></div>
+  </div>
+</section>
+
+<div id="safe-probe" aria-hidden="true"></div>
+
+<div id="loading" role="status">
+  <div class="u-load-inner">
+    <div class="u-load-logo">UNSTABLE<br>UNIVERSE</div>
+    <div class="u-load-bar"><div id="load-fill"></div></div>
+    <div class="u-load-text" id="load-text">Loading the timeline</div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
