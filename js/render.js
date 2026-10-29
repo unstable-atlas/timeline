@@ -144,12 +144,22 @@ ${S.ev_marks === 'filled'   // layout.yaml ev_marks: a filled notable disc and a
 .mj-lbl.hl .ev-box{stroke:var(--c-bright);stroke-width:4}
 .mj-lbl.hl .ev-label{fill:var(--c-bright)}
 .mjline.hl .event{opacity:1;stroke-width:${S.event_w + 2}}.mjline.hl .eglow{opacity:1}
-.pline.flash{stroke:var(--c-bright);stroke-width:${S.line_w * 2}}.pglow.flash{opacity:1;stroke-width:${S.line_w + 16}}
+.pline.lit{stroke:var(--c-bright);stroke-width:${S.line_w * 2}}.pglow.lit{opacity:1;stroke-width:${S.line_w + 16}}
 .stem.hl{opacity:1}
 .beam-boost{opacity:.6;pointer-events:none}
 .evmark.pulse{animation:pulse .2s ease-out}
 @keyframes pulse{50%{transform:scale(1.5)}}
 .focusing [data-dim]:not(.in-focus){opacity:${S.site_focus_dim}}
+/* hover feedback (live view): app.js setHalo adds wide translucent strokes behind a hovered arc's bracket and label, or
+   around a face, and removes them after; they never sit in the poster otherwise (even hidden, they slowed WebKit's zoom) */
+.bracket .br-halo line{stroke-width:${S.bracket_w + 18};stroke-linecap:round}
+.br-halo{opacity:.3;pointer-events:none}
+.lbl-halo{fill:none;stroke-width:10;opacity:.45;pointer-events:none}
+.bracket.ahl line{stroke-width:${S.bracket_w * 1.4}}
+.face-halo{pointer-events:none}.face-halo rect{fill:none;stroke:var(--c-bright)}
+.face.fhl .face-frame{stroke:var(--c-bright)}
+.panel.thl .panel-box{stroke:var(--c-bright)}
+.title-halo{fill:none;stroke:var(--c-accent);stroke-width:14;opacity:.4;pointer-events:none}
 `;
 }
 
@@ -158,8 +168,8 @@ ${S.ev_marks === 'filled'   // layout.yaml ev_marks: a filled notable disc and a
 // gradient (the page draws it behind, so it never ends at the poster's edge); it's cropped below the last cards.
 export const liveHeight = data => data.band ? Math.round(data.band.top - data.sizes.fn_band_gap + data.sizes.site_live_pad) : data.H;
 
-// opts: {live, thumbs: {id: href}, faces: {p: href}, fontFaces: css, transparent, background: dataURL|null,
-//        bgDim, settings}
+// opts: {live, thumbs: {id: href}, faces: {p: href}, fontFaces: css, transparent, settings}. The sky colours (a
+// background preset) come in theme.colors.
 export function renderPoster(data, theme, opts) {
   const S = data.sizes, W = data.W, H = opts.live ? liveHeight(data) : data.H;
   const sp = spoilerState(data, opts.settings);
@@ -173,21 +183,13 @@ export function renderPoster(data, theme, opts) {
 
   // ---- sky
   if (!opts.transparent) {
-    if (opts.background && opts.live) {
-      // the page draws the background image behind; only the stars' keep-out logic is skipped
-    } else if (opts.background) {
-      L.bg.push(`<rect width="${W}" height="${H}" fill="var(--c-bg)"/>`,
-        `<image href="${opts.background}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`,
-        `<rect width="${W}" height="${H}" fill="var(--c-bg)" opacity="${opts.bgDim ?? 0.45}"/>`);
-    } else {
-      defs.push(`<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--c-sky_top)" style="stop-color:var(--c-sky_top)"/>` +
-        `<stop offset=".55" style="stop-color:var(--c-sky_mid)"/><stop offset="1" style="stop-color:var(--c-sky_bottom)"/></linearGradient>`);
-      // the live view draws the nebulae and stars in layers of their own (nebulaSVG, drawStars), and keeps only the
-      // reach of the nebulae as an empty rect: without it, WebKit paints slower frames while zooming near the fit
-      if (opts.live) { const [x0, y0, x1, y1] = nebulaSVG(data, theme, H).box; L.bg.push(`<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" fill="none"/>`); }
-      else L.bg.push(`<rect width="${W}" height="${H}" fill="url(#sky)"/>`,
-        nebulae(W, H, theme.colors.nebulae, defs), stars(W, H, theme.colors.stars, keepOut(data)));
-    }
+    defs.push(`<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--c-sky_top)" style="stop-color:var(--c-sky_top)"/>` +
+      `<stop offset=".55" style="stop-color:var(--c-sky_mid)"/><stop offset="1" style="stop-color:var(--c-sky_bottom)"/></linearGradient>`);
+    // the live view draws the nebulae and stars in layers of their own (nebulaSVG, drawStars), and keeps only the
+    // reach of the nebulae as an empty rect: without it, WebKit paints slower frames while zooming near the fit
+    if (opts.live) { const [x0, y0, x1, y1] = nebulaSVG(data, theme, H).box; L.bg.push(`<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" fill="none"/>`); }
+    else L.bg.push(`<rect width="${W}" height="${H}" fill="url(#sky)"/>`,
+      nebulae(W, H, theme.colors.nebulae, defs), stars(W, H, theme.colors.stars, keepOut(data)));
   }
   defs.push(`<filter id="glow" x="-1%" y="-200%" width="102%" height="500%"><feGaussianBlur stdDeviation="5"/></filter>`,
     `<filter id="glow26" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="13"/></filter>`,
@@ -225,7 +227,8 @@ export function renderPoster(data, theme, opts) {
     }
     L.ticks.push(`<g${pl}><path d="${dd}" class="tick"/><path d="${dw}" class="tick-w"/></g>`);
     const fx = ln.face.x + 60, fy = ln.face.y, F = S.face;
-    L.labels.push(`<g class="face"${pl}><rect x="${fx - 4}" y="${fy - 4}" width="${F + 8}" height="${F + 8}" class="face-glow"/>` +
+    const fh = opts.live ? ` class="face hit" data-hit="face" data-face="${esc(ln.p)}"` : ' class="face"';   // live: a click opens the protagonist card
+    L.labels.push(`<g${fh}${pl}><rect x="${fx - 4}" y="${fy - 4}" width="${F + 8}" height="${F + 8}" class="face-glow"/>` +
       `<rect x="${fx}" y="${fy}" width="${F}" height="${F}" fill="var(--c-bg)"/>` +
       `<image href="${opts.faces[ln.p]}" x="${fx + 5}" y="${fy + 5}" width="${F - 10}" height="${F - 10}" style="image-rendering:pixelated"/>` +
       `<rect x="${fx + 2.5}" y="${fy + 2.5}" width="${F - 5}" height="${F - 5}" class="face-frame"/>` +
@@ -233,9 +236,9 @@ export function renderPoster(data, theme, opts) {
   }
 
   // ---- brackets (a bracket shows only the watched part of its arc in spoiler mode)
-  for (const br of data.brackets) {
+  data.brackets.forEach((br, bi) => {
     const seen = br.members.filter(([n]) => !sp.later(n));
-    if (!seen.length && sp.N != null && sp.mode === 'hide') continue;
+    if (!seen.length && sp.N != null && sp.mode === 'hide') return;
     const veiled = !seen.length;
     let lo = br.lo, hi = br.hi;
     if (sp.N != null && seen.length && seen.length < br.members.length) {
@@ -245,21 +248,24 @@ export function renderPoster(data, theme, opts) {
     const col = veiled ? 'var(--c-no_arc)' : arcVar(br.arc), y = br.y;
     const bars = [[lo, br.lx], [br.lx + br.lw, hi]].filter(([a, b]) => b - a > 1)
       .map(([a, b]) => `<line x1="${r1(a)}" y1="${y}" x2="${r1(b)}" y2="${y}"/>`).join('');
-    const hitA = veiled ? '' : ` data-hit="arc" data-arc-hit="${br.arc}"`;
+    const live = opts.live && !veiled;   // live and watched: a hit target; data-br pairs bracket and label for the hover glow
+    const hitA = veiled ? '' : ` data-hit="arc" data-arc-hit="${br.arc}"${opts.live ? ` data-br="${bi}"` : ''}`;
+    const ticks = `<line x1="${r1(lo)}" y1="${y - S.bracket_tick}" x2="${r1(lo)}" y2="${y + S.bracket_tick}"/>` +
+      `<line x1="${r1(hi)}" y1="${y - S.bracket_tick}" x2="${r1(hi)}" y2="${y + S.bracket_tick}"/>`;
     L.lines.push(`<g stroke="${col}" class="bracket${veiled ? ' spoiled' : ' hit'}" data-arc="${br.arc}" data-p="${esc(br.p)}" data-dim="1"${hitA}>` +
-      (veiled || !opts.live ? '' : `<rect x="${r1(lo)}" y="${r1(y - S.bracket_tick - 6)}" width="${r1(hi - lo)}" height="${2 * S.bracket_tick + 12}" class="br-pad"/>`) + bars +
-      `<line x1="${r1(lo)}" y1="${y - S.bracket_tick}" x2="${r1(lo)}" y2="${y + S.bracket_tick}"/>` +
-      `<line x1="${r1(hi)}" y1="${y - S.bracket_tick}" x2="${r1(hi)}" y2="${y + S.bracket_tick}"/></g>`);
+      (live ? `<rect x="${r1(lo)}" y="${r1(y - S.bracket_tick - 6)}" width="${r1(hi - lo)}" height="${2 * S.bracket_tick + 12}" class="br-pad"/>` : '') + bars + ticks + '</g>');
     const kh = S.arc_fs + 2 * S.label_ko_pad;   // the knockout: leaders and event lines pass behind the centred label
-    L.labels.push(`<g class="arc-lbl${veiled ? '' : ' hit'}" data-arc="${br.arc}" data-p="${esc(br.p)}" data-dim="1"${hitA}><rect x="${r1(br.lx)}" y="${r1(y - kh / 2)}" width="${br.lw}" height="${kh}" rx="${S.label_ko_r}" class="arc-ko"/>` +
+    L.labels.push(`<g class="arc-lbl${veiled ? '' : ' hit'}" data-arc="${br.arc}" data-p="${esc(br.p)}" data-dim="1"${hitA}>` +
+      `<rect x="${r1(br.lx)}" y="${r1(y - kh / 2)}" width="${br.lw}" height="${kh}" rx="${S.label_ko_r}" class="arc-ko"/>` +
       `<text x="${r1(br.lx + br.lw / 2)}" y="${y + 1}" class="arc-label" fill="${col}">${veiled ? '? ? ?' : esc(br.name)}</text></g>`);
-  }
+  });
 
   // ---- major events
   data.majors.forEach((ev, i) => {
     const later = sp.later(ev.first);
     if (later && sp.mode === 'hide') return;
-    const hit = later ? ' class="mj-lbl"' : ` class="mj-lbl hit" data-hit="major" data-i="${i}" data-mj="${i}"`;
+    // the line, its diamonds and its label all carry data-mjl, so a focus dims the whole major event
+    const hit = (later ? ' class="mj-lbl"' : ` class="mj-lbl hit" data-hit="major" data-i="${i}" data-mj="${i}"`) + ` data-dim="1" data-mjl="${i}"`;
     let segs = '', glow = '';
     for (const [a, b] of ev.segs) {
       segs += `<line x1="${ev.x}" y1="${a}" x2="${ev.x}" y2="${b}" class="event"/>`;
@@ -269,7 +275,7 @@ export function renderPoster(data, theme, opts) {
     const h = S.event_node / 2;
     for (const yy of ev.node_ys) {   // live and watched: in a hit group with a pad as far past the diamond as an event mark's
       const node = `<rect x="${r1(ev.x - h)}" y="${r1(yy - h)}" width="${S.event_node}" height="${S.event_node}" transform="rotate(45 ${ev.x} ${yy})" class="evnode"/>`;
-      L.points.push(later || !opts.live ? node : `<g class="mjnode hit" data-hit="major" data-i="${i}" data-mj="${i}">` +
+      L.points.push(later || !opts.live ? `<g data-dim="1" data-mjl="${i}">${node}</g>` : `<g class="mjnode hit" data-hit="major" data-i="${i}" data-mj="${i}" data-dim="1" data-mjl="${i}">` +
         `<circle cx="${ev.x}" cy="${yy}" r="${r1(h * Math.SQRT2 + S.site_mark_pad)}" class="evpad"/>${node}</g>`);
     }
     const top = ev.y - ev.h / 2, lh = Math.round(S.event_fs * 1.5);
@@ -347,18 +353,17 @@ export function renderPoster(data, theme, opts) {
   // ---- legend panel
   L.labels.unshift(panel(data, theme, S, sp, TF, PF, opts.live));
 
-  const vars = cssVars(theme, opts.settings);
+  const vars = cssVars(theme);
   const order = ['bg', 'band', 'beams', 'ticks', 'lines', 'foot', 'events', 'leaders', 'points', 'marks', 'labels'];
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="${vars}">` +
     `<style>${posterCSS(S, fonts, opts.fontFaces || '')}</style><defs>${defs.join('')}</defs>` +
     order.map(k => `<g class="layer-${k}">${L[k].join('')}</g>`).join('') + `</svg>`;
 }
 
-export function cssVars(theme, settings) {
+export function cssVars(theme) {
   const out = [];
   for (const [k, v] of Object.entries(theme.colors)) if (typeof v === 'string') out.push(`--c-${k}:${v}`);
-  const arcs = { ...theme.arcs, ...(settings.arcColors || {}) };
-  for (const [k, v] of Object.entries(arcs)) out.push(`--a-${k}:${v}`);
+  for (const [k, v] of Object.entries(theme.arcs)) out.push(`--a-${k}:${v}`);
   return out.join(';');
 }
 
@@ -592,7 +597,8 @@ function panel(data, theme, S, sp, TF, PF, live) {
   y += 236 + 40;
   out.push(`<text x="${X}" y="${y + 13}" class="sub" dominant-baseline="central">STORY TIMELINE · EPISODES ${data.ep_first}–${data.ep_last}</text>`);
   y += 26 + 50;
-  if (live) return `<g class="panel"><rect x="${x0 + 1.5}" y="${y0 + 1.5}" width="${w - 3}" height="${y - y0 - 3}" class="panel-box"/>${out.join('')}</g>`;
+  // live: the title is a button back to the home view (app.js); a hover adds .thl and a ring (setHalo)
+  if (live) return `<g class="panel hit" data-hit="title"><rect x="${x0 + 1.5}" y="${y0 + 1.5}" width="${w - 3}" height="${y - y0 - 3}" class="panel-box"/>${out.join('')}</g>`;
   const h3 = t => { y += 46; out.push(`<text x="${X}" y="${y + 12}" class="lg-h" dominant-baseline="central">${t}</text>`); y += 24 + 22; };
   const para = (t, x, width, cls, fs, lh) => {
     const lines = wrapText(t, `${fs}px '${TF}'`, width);

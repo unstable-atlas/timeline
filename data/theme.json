@@ -114,6 +114,99 @@
   "legend_sample": "#f2b632",
   "legend_card": "#0c0e22"
  },
+ "presets": {
+  "night": {
+   "name": "Night sky"
+  },
+  "forest": {
+   "name": "Forest",
+   "sky_top": "#030c08",
+   "sky_mid": "#06170f",
+   "sky_bottom": "#0b2015",
+   "bg": "#050d09",
+   "stars": [
+    "#fffbe8",
+    "#ffffff",
+    "#ffe6a8",
+    "#dcffc4",
+    "#ffd07a"
+   ],
+   "nebulae": [
+    "40,160,90",
+    "30,150,140",
+    "100,170,50",
+    "20,120,100",
+    "70,150,80"
+   ],
+   "sparkle": "#fff3cf"
+  },
+  "ocean": {
+   "name": "Ocean",
+   "sky_top": "#020a18",
+   "sky_mid": "#04172a",
+   "sky_bottom": "#072335",
+   "bg": "#040c18",
+   "stars": [
+    "#ffffff",
+    "#d4f4ff",
+    "#b8e6ff",
+    "#dcfff6",
+    "#96d8ff"
+   ],
+   "nebulae": [
+    "30,140,210",
+    "20,170,180",
+    "40,90,220",
+    "20,120,160",
+    "60,190,210"
+   ],
+   "sparkle": "#e6fbff"
+  },
+  "nether": {
+   "name": "Nether",
+   "sky_top": "#130406",
+   "sky_mid": "#200709",
+   "sky_bottom": "#2b0b09",
+   "bg": "#110406",
+   "stars": [
+    "#ffd8a8",
+    "#ffb070",
+    "#ff8a50",
+    "#ffe8c8",
+    "#ff6a3a"
+   ],
+   "nebulae": [
+    "210,50,30",
+    "235,110,30",
+    "170,30,50",
+    "220,75,20",
+    "150,40,30"
+   ],
+   "sparkle": "#ffe2b8"
+  },
+  "end": {
+   "name": "The End",
+   "sky_top": "#050308",
+   "sky_mid": "#0a0710",
+   "sky_bottom": "#100b17",
+   "bg": "#060409",
+   "stars": [
+    "#fffbd8",
+    "#f4f0c0",
+    "#ffffff",
+    "#e8e4a8",
+    "#e2d4ff"
+   ],
+   "nebulae": [
+    "130,60,200",
+    "200,185,90",
+    "100,40,170",
+    "175,155,60",
+    "150,80,215"
+   ],
+   "sparkle": "#fffbe0"
+  }
+ },
  "ui": {
   "panel": "rgba(10,10,30,.94)",
   "pane": "rgba(7,8,22,.72)",

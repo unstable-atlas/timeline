@@ -30,22 +30,22 @@
 <div id="stage">
   <div id="sky"></div>
   <div id="starfield"></div>
-  <div id="bgimg" hidden></div>
-  <img id="nebula" alt="">
+  <img id="nebula" alt=""><img id="nebula2" alt="" hidden>
   <canvas id="pstars"></canvas>
   <div id="poster" role="img" aria-label="Story timeline poster"></div>
 </div>
 
 <div id="rail" class="u-pane" aria-label="Storylines"></div>
 
-<div id="dock" class="u-pane" hidden><div id="dock-row" aria-label="Events"></div></div>
+<div id="dock" class="u-pane" hidden><div id="dock-tier"></div><button id="dock-prev" class="u-dstep" title="Previous event in story order" aria-label="Previous event">◀</button><div id="dock-row" aria-label="Events"></div><button id="dock-next" class="u-dstep" title="Next event in story order" aria-label="Next event">▶</button></div>
 <section id="events-sheet" class="u-sheet" hidden aria-label="Events">
   <div class="u-handle"></div>
-  <div class="u-sheet-head"><h2 class="u-h">Events</h2></div>
+  <div class="u-sheet-head"><h2 class="u-h">Events</h2><div id="sheet-tier"></div></div>
   <div id="events-list"></div>
 </section>
 <!-- one toggle for the dock (desktop) and the events sheet (phone): the same button in the same place, open or closed -->
-<button id="dock-btn" class="u-pillbtn" aria-expanded="false" aria-controls="dock events-sheet"><span>Events</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+<!-- styled as the Key and Arcs buttons; its icon is the event marks (filled in by app.js) -->
+<button id="dock-btn" class="u-pillbtn u-ctl" aria-expanded="false" aria-controls="dock events-sheet" title="Every event in story order"><span class="u-keygl" aria-hidden="true"></span><span class="u-cl">Events</span></button>
 
 <header id="bar">
   <div class="u-seg u-desk" id="zoomctl">
@@ -55,75 +55,75 @@
     <button id="b-in" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
   </div>
   <span class="u-grow"></span>
-  <button id="b-search" class="u-desk u-icon" title="Search (/)" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
-  <button id="b-spoil" class="u-desk u-pillbtn" data-open="spoilers">Spoilers: off</button>
-  <button class="u-desk u-icon" data-open="settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg></button>
-  <button class="u-desk u-icon" data-open="export" title="Save as PNG" aria-label="Save as PNG"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg></button>
-  <button id="b-search2" class="u-phone u-icon" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
-  <div class="u-phone u-eyewrap">
-    <button id="b-eye" class="u-icon" data-open="spoilers" aria-label="Spoilers"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
-    <span id="eye-chip" hidden></span>
-  </div>
-  <button class="u-phone u-icon" data-open="menu" aria-label="More"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+  <!-- the same three controls on every layout: a search field (a pill on phones), the Watched chip and the More menu;
+       in landscape each is a column button, an icon over its .u-cl label -->
+  <button id="b-search" class="u-ctl" title="Search (/ or ⌘K)" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><span class="u-sfull">Search episodes, events, people</span><span class="u-cl u-sshort">Search</span></button>
+  <button id="b-watch" class="u-ctl u-pillbtn" data-open="spoilers" aria-haspopup="dialog" title="Hide episodes and events after the last one you've watched"><svg class="u-land-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="u-slash" d="M4 20L20 4"/></svg><span class="u-cl">Watched: all ▾</span></button>
+  <button id="b-more" class="u-ctl u-icon" data-open="menu" aria-haspopup="menu" title="Appearance, save image, about" aria-label="More"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span class="u-cl">More</span></button>
 </header>
 
-<!-- the map key: the poster's own glyphs (filled in by app.js) and its name -->
-<button id="b-legend" class="u-fab u-pillbtn" data-open="legend" aria-label="Map key"><span class="u-keygl" aria-hidden="true"></span><span class="u-keyw">Key</span></button>
-<div id="key-hint" hidden><button data-open="legend">What do the stars, circles and gold lines mean? <span aria-hidden="true">›</span></button></div>
+<!-- the Key and the Arcs side by side at the bottom left (in landscape, in the button column) -->
+<div id="fabl">
+  <button id="b-legend" class="u-pillbtn u-ctl" data-open="legend" aria-label="Map key" title="What the marks and lines mean"><svg class="u-keyic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg><span class="u-keyw u-cl">Key</span></button>
+  <button id="b-arcs" class="u-pillbtn u-ctl" data-open="arcs" title="Every arc; pick one to show only it"><svg class="u-arcic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6M3 12h18M21 9v6"/></svg><span class="u-cl">Arcs</span></button>
+</div>
+<!-- the events tip, shown once (app.js): a ring on a gold mark, then on the Events button, each with a bubble -->
+<div id="event-tips" hidden><div id="et-ring"></div><div id="et-bubble" role="dialog" aria-modal="false" aria-label="Tip about events"><p id="et-text"></p>
+  <div class="u-etfoot"><span id="et-step"></span><button class="u-etgo" id="et-go"></button></div><button class="u-etx" id="et-x" aria-label="Close the tip">×</button></div></div>
 <div id="mjtags" aria-label="Major events in view"></div>
-<button id="b-fit2" class="u-fab u-icon u-phone" title="Fit" aria-label="Fit"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+<button id="b-fit2" class="u-fab u-icon u-phone u-ctl" title="Fit the whole timeline" aria-label="Fit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span class="u-cl">Fit</span></button>
 <button id="focus-chip" class="u-pillbtn" hidden></button>
 <div id="hover-label" hidden></div>
 <div id="pop" role="dialog" aria-live="polite" hidden></div>
 
-<nav class="u-dlg u-menu" id="menu" hidden>
-  <button data-open="settings">Settings</button>
-  <button data-open="export">Save as PNG</button>
-  <button data-open="credits">Credits</button>
+<nav class="u-dlg u-menu" id="menu" aria-label="More" hidden>
+  <button data-open="appearance"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18l5-6 4 4 3-3 6 5"/><circle cx="16" cy="7" r="2"/><rect x="2.5" y="3.5" width="19" height="17" rx="2"/></svg><span><b>Appearance</b><small>The sky behind the timeline</small></span></button>
+  <button data-open="export"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg><span><b>Save poster image</b><small>Download the whole timeline as a PNG</small></span></button>
+  <button id="m-copy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg><span><b>Copy link to this view</b><small id="m-copy-sub">A link that opens exactly what you see</small></span></button>
+  <button data-open="about"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg><span><b>About &amp; credits</b></span></button>
 </nav>
 
-<section class="u-dlg" id="spoilers" role="dialog" aria-label="Spoilers" hidden>
+<!-- the spoiler slider, opened from the Watched chip: positions E001 … the last episode, then All -->
+<section class="u-dlg" id="spoilers" role="dialog" aria-label="How far have you watched?" hidden>
   <button class="u-close" aria-label="Close">×</button>
-  <h2 class="u-h">Spoilers</h2>
-  <label class="u-switch"><input type="checkbox" id="sp-on"><span class="u-track"></span>Hide what I haven't watched</label>
-  <div id="sp-body">
-    <div class="u-label">Last episode I watched</div>
-    <div id="sp-strip" role="listbox" aria-label="Last episode watched"></div>
-    <div id="sp-pick" class="u-hint"></div>
-    <div class="u-segctl" id="sp-mode" role="radiogroup">
+  <h2 class="u-h">How far have you watched?</h2>
+  <p class="u-hint u-spdesc">Pick your last episode to blur or hide what follows.</p>
+  <div class="u-sprow">
+    <button id="sp-prev" class="u-step" aria-label="One episode earlier">‹</button>
+    <div id="sp-preview"></div>
+    <button id="sp-next" class="u-step" aria-label="One episode later">›</button>
+  </div>
+  <input type="range" id="sp-range" min="0" max="1" step="1" aria-label="Last episode watched">
+  <div id="sp-seasons" role="group" aria-label="Jump to the start of a season"></div>
+  <p class="u-hint" id="sp-count" aria-live="polite"></p>
+  <div class="u-sprow2"><button class="u-btn u-small" id="sp-all">Show everything</button>
+    <div class="u-segctl" id="sp-mode" role="radiogroup" aria-label="Unwatched episodes are">
       <button data-mode="blur" role="radio">Blur</button><button data-mode="hide" role="radio">Hide</button>
     </div>
   </div>
 </section>
 
-<section class="u-dlg" id="settings" role="dialog" aria-label="Settings" hidden>
+<section class="u-dlg" id="appearance" role="dialog" aria-label="Appearance" hidden>
   <button class="u-close" aria-label="Close">×</button>
-  <h2 class="u-h">Background</h2>
-  <div class="u-row">
-    <label class="u-btn" for="bg-file">Choose image…</label><input type="file" id="bg-file" accept="image/*" hidden>
-    <button id="bg-clear" class="u-btn">Starfield</button>
-  </div>
-  <label class="u-row" id="bg-dim-row">Darken <input type="range" id="bg-dim" min="0" max="0.9" step="0.05"></label>
-  <div class="u-hint" id="bg-note"></div>
-  <details id="arc-details">
-    <summary><span>Customise arc colours</span><button id="arc-reset" class="u-btn u-small">Reset</button></summary>
-    <div id="arc-colors"></div>
-  </details>
-  <div class="u-foot u-desk"><button class="u-link" data-open="credits">Credits</button></div>
+  <h2 class="u-h">Appearance</h2>
+  <div class="u-label">Background</div>
+  <div id="bg-presets" class="u-swatches" role="radiogroup" aria-label="Background"></div>
 </section>
 
-<section class="u-dlg" id="export" role="dialog" aria-label="Save as PNG" hidden>
+<section class="u-dlg" id="export" role="dialog" aria-label="Save poster image" hidden>
   <button class="u-close" aria-label="Close">×</button>
-  <h2 class="u-h">Save as PNG</h2>
+  <h2 class="u-h">Save poster image</h2>
+  <p class="u-hint">Downloads the whole timeline as one PNG, drawn in your browser. Bigger sizes take longer.</p>
+  <p class="u-hint u-gold" id="ex-spoil" hidden></p>
   <div id="ex-sizes"></div>
   <label class="u-switch"><input type="checkbox" id="ex-transparent"><span class="u-track"></span>Transparent background</label>
   <button id="ex-go" class="u-btn u-primary"><span id="ex-bar"></span><span id="ex-label">Save PNG</span></button>
 </section>
 
-<section class="u-dlg" id="credits" role="dialog" aria-label="Credits" hidden>
+<section class="u-dlg" id="about" role="dialog" aria-label="About and credits" hidden>
   <button class="u-close" aria-label="Close">×</button>
-  <h2 class="u-h">Credits</h2>
-  <p>The Unstable Universe (Unstable SMP) is made by <strong>Wemmbu</strong>, <strong>ParrotX2</strong>, <strong>SpokeIsHere</strong> and <strong>FlameFrags</strong>, with many more players. Every episode card links to its video; thumbnails belong to their creators.</p>
+  <h2 class="u-h">About &amp; credits</h2>
+  <p>Every canon episode of the Unstable SMP, the Minecraft YouTube series by <strong>Wemmbu</strong>, <strong>ParrotX2</strong>, <strong>SpokeIsHere</strong> and <strong>FlameFrags</strong> (with many more players), placed in story order. Every episode card links to its video; thumbnails belong to their creators.</p>
   <p>Story order, summaries and events are based on the <a href="https://unstable-universe-mc.fandom.com/wiki/Unstable_Universe_Wiki" target="_blank" rel="noopener">Unstable Universe Wiki</a>, whose text is licensed under <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener">CC BY-SA 3.0</a>. This timeline's text is shared under the same licence.</p>
   <p>Pixel font: Press Start 2P by CodeMan38; text font: Rubik. Both under the SIL Open Font License.</p>
   <p class="u-hint">A fan project, not affiliated with the creators.</p>
@@ -131,8 +131,16 @@
 
 <section class="u-dlg" id="legend" role="dialog" aria-label="Map key" hidden>
   <button class="u-close" aria-label="Close">×</button>
-  <details id="lg-read" open><summary class="u-h">Reading the map</summary><div id="lg-rows"></div></details>
-  <details id="lg-arcs"><summary class="u-h">Arcs <span id="lg-arcn"></span></summary><div id="lg-arclist"></div></details>
+  <h2 class="u-h">Reading the map</h2>
+  <div id="lg-rows"></div>
+</section>
+
+<!-- the arcs, from the Arcs button: each a coloured bracket and its name; a click shows only that arc -->
+<section class="u-dlg" id="arcs" role="dialog" aria-label="Arcs" hidden>
+  <button class="u-close" aria-label="Close">×</button>
+  <h2 class="u-h">Arcs <span id="lg-arcn"></span></h2>
+  <p class="u-hint u-arcshint"></p>
+  <div id="lg-arclist"></div>
 </section>
 
 <section id="search" class="u-search" role="dialog" aria-label="Search" hidden>
