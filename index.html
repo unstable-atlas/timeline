@@ -37,10 +37,12 @@
 
 <div id="rail" class="u-pane" aria-label="Storylines"></div>
 
-<div id="dock" class="u-pane" hidden><div id="dock-tier"></div><button id="dock-prev" class="u-dstep" title="Previous event in story order" aria-label="Previous event">◀</button><div id="dock-row" aria-label="Events"></div><button id="dock-next" class="u-dstep" title="Next event in story order" aria-label="Next event">▶</button></div>
+<div id="dock" class="u-pane" hidden><div id="dock-row" aria-label="Events"></div></div>
+<!-- the dock stepper: one button split in two, ‹ | ›, as wide as the Events button and right below it while the desktop dock is open -->
+<div id="dock-steps" role="group" aria-label="Step through events" hidden><button id="dock-prev" class="u-dstep" title="Previous event in story order" aria-label="Previous event"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6"/></svg></button><button id="dock-next" class="u-dstep" title="Next event in story order" aria-label="Next event"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button></div>
 <section id="events-sheet" class="u-sheet" hidden aria-label="Events">
   <div class="u-handle"></div>
-  <div class="u-sheet-head"><h2 class="u-h">Events</h2><div id="sheet-tier"></div></div>
+  <div class="u-sheet-head"><h2 class="u-h">Events</h2></div>
   <div id="events-list"></div>
 </section>
 <!-- one toggle for the dock (desktop) and the events sheet (phone): the same button in the same place, open or closed -->
@@ -55,10 +57,10 @@
     <button id="b-in" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
   </div>
   <span class="u-grow"></span>
-  <!-- the same three controls on every layout: a search field (a pill on phones), the Watched chip and the More menu;
+  <!-- the same three controls on every layout: a search field (a pill on phones), the spoiler chip and the More menu;
        in landscape each is a column button, an icon over its .u-cl label -->
-  <button id="b-search" class="u-ctl" title="Search (/ or ⌘K)" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><span class="u-sfull">Search episodes, events, people</span><span class="u-cl u-sshort">Search</span></button>
-  <button id="b-watch" class="u-ctl u-pillbtn" data-open="spoilers" aria-haspopup="dialog" title="Hide episodes and events after the last one you've watched"><svg class="u-land-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="u-slash" d="M4 20L20 4"/></svg><span class="u-cl">Watched: all ▾</span></button>
+  <button id="b-search" class="u-ctl" title="Search (/ or ⌘K)" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><span class="u-sfull">Search the timeline</span><span class="u-cl u-sshort">Search</span></button>
+  <button id="b-watch" class="u-ctl u-pillbtn" data-open="spoilers" aria-haspopup="dialog" title="Hide episodes and events after the last one you've watched"><svg class="u-land-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="u-slash" d="M4 20L20 4"/></svg><span class="u-cl">Spoiler mode: off ▾</span></button>
   <button id="b-more" class="u-ctl u-icon" data-open="menu" aria-haspopup="menu" title="Appearance, save image, about" aria-label="More"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span class="u-cl">More</span></button>
 </header>
 
@@ -67,9 +69,6 @@
   <button id="b-legend" class="u-pillbtn u-ctl" data-open="legend" aria-label="Map key" title="What the marks and lines mean"><svg class="u-keyic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg><span class="u-keyw u-cl">Key</span></button>
   <button id="b-arcs" class="u-pillbtn u-ctl" data-open="arcs" title="Every arc; pick one to show only it"><svg class="u-arcic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6M3 12h18M21 9v6"/></svg><span class="u-cl">Arcs</span></button>
 </div>
-<!-- the events tip, shown once (app.js): a ring on a gold mark, then on the Events button, each with a bubble -->
-<div id="event-tips" hidden><div id="et-ring"></div><div id="et-bubble" role="dialog" aria-modal="false" aria-label="Tip about events"><p id="et-text"></p>
-  <div class="u-etfoot"><span id="et-step"></span><button class="u-etgo" id="et-go"></button></div><button class="u-etx" id="et-x" aria-label="Close the tip">×</button></div></div>
 <div id="mjtags" aria-label="Major events in view"></div>
 <button id="b-fit2" class="u-fab u-icon u-phone u-ctl" title="Fit the whole timeline" aria-label="Fit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span class="u-cl">Fit</span></button>
 <button id="focus-chip" class="u-pillbtn" hidden></button>
@@ -80,10 +79,12 @@
   <button data-open="appearance"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18l5-6 4 4 3-3 6 5"/><circle cx="16" cy="7" r="2"/><rect x="2.5" y="3.5" width="19" height="17" rx="2"/></svg><span><b>Appearance</b><small>The sky behind the timeline</small></span></button>
   <button data-open="export"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg><span><b>Save poster image</b><small>Download the whole timeline as a PNG</small></span></button>
   <button id="m-copy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg><span><b>Copy link to this view</b><small id="m-copy-sub">A link that opens exactly what you see</small></span></button>
+  <!-- visitor switches, on by default and remembered (app.js, "visitor switches"); Characters only when the build has the feature -->
+  <div class="u-menusw" id="m-switches"></div>
   <button data-open="about"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg><span><b>About &amp; credits</b></span></button>
 </nav>
 
-<!-- the spoiler slider, opened from the Watched chip: positions E001 … the last episode, then All -->
+<!-- the spoiler slider, opened from the spoiler chip: positions E001 … the last episode, then All -->
 <section class="u-dlg" id="spoilers" role="dialog" aria-label="How far have you watched?" hidden>
   <button class="u-close" aria-label="Close">×</button>
   <h2 class="u-h">How far have you watched?</h2>
@@ -145,7 +146,7 @@
 
 <section id="search" class="u-search" role="dialog" aria-label="Search" hidden>
   <div class="u-searchbox">
-    <div class="u-qrow"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><input id="q" type="search" placeholder="Episodes, events, arcs, characters" autocomplete="off" spellcheck="false" aria-label="Search"></div>
+    <div class="u-qrow"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><input id="q" type="search" placeholder="Search the timeline" autocomplete="off" spellcheck="false" aria-label="Search"></div>
     <div class="u-results" role="listbox"></div>
   </div>
 </section>

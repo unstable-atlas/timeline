@@ -6,6 +6,7 @@ export const CONFIG = {
   theme: 'data/theme.json',
   fonts: 'fonts/',
   faces: 'faces/',
+  characters: 'data/characters.json',   // the characters feature's data, loaded in idle time (only when it's on)
 
   // Thumbnail source: the only place the site decides where thumbnails come from. AVIF copies made by
   // site/build_site.py. A YouTube-hosted source would need that host to allow CORS for the PNG export.

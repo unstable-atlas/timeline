@@ -21,14 +21,17 @@ let search;
 let cardY0 = 0, cardY1 = 1;   // top of the highest card, bottom of the lowest: 100% zoom fits these
 
 // ---------------------------------------------------------------- settings (this browser only)
-// dockHigh: the events dock shows only the major events and highlights; bgPreset: a key of theme.yaml `presets`;
-// spoiler.modeSet: the visitor picked Blur or Hide themselves
-const DEFAULTS = { spoiler: { on: false, upTo: 1, mode: 'hide', modeSet: false }, bgPreset: 'night', dockOpen: false, dockHigh: false };
+// bgPreset: a key of theme.yaml `presets`;
+// spoiler.modeSet: the visitor picked Blur or Hide themselves; charsOn, eventsOn: the More menu's switches (the
+// characters feature, the events dock and its button), off until the visitor turns them on: the poster alone is
+// plenty for a newcomer, the docks are for regulars
+const DEFAULTS = { spoiler: { on: false, upTo: 1, mode: 'hide', modeSet: false }, bgPreset: 'night', dockOpen: false, charsOn: false, eventsOn: false };
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CONFIG.storageKey) || '{}');
     delete s.arcColors; delete s.bgDim;   // rounds 1-8: arc colours and the custom background, both removed
-    if ('dockTier' in s) { s.dockHigh = s.dockTier === 'high'; delete s.dockTier; }   // rounds 9-11: a three-way tier filter
+    delete s.dockTier; delete s.dockHigh;   // rounds 9-15: the dock's tier filter and Highlights switch, removed
+    localStorage.removeItem('seenEventTips');   // rounds 12-15: the events tip, removed
     localStorage.removeItem(CONFIG.storageKey + ':bg');
     const out = { ...DEFAULTS, ...s, spoiler: { ...DEFAULTS.spoiler, ...(s.spoiler || {}) } };
     if (!out.spoiler.modeSet) out.spoiler.mode = DEFAULTS.spoiler.mode;   // rounds 1-10 saved Blur, then the default, without it being chosen
@@ -64,17 +67,21 @@ async function start() {
   draw();
   viewer = new Viewer(stage, host, data.W, LH, {
     maxScale: S.site_max_scale, insets, fitHeight: () => phone && !land,
+    extra: panRoom,
     homeScale: () => land ? S.site_land_home_zoom / 100 * fitScale() : null,
     onTransform: v => { moveNebulae(v); paintStars(v); lastMove = performance.now(); },
     rubberMax: S.site_rubber_max, rubberK: S.site_rubber_k, rubberMs: S.site_rubber_ms,
-    onChange: frame, onSettle: settle, onTap: tap, onHover: hover, onGestureStart: () => { hoverLabel(null); setHalo(null); endTips(); },
+    onChange: frame, onSettle: settle, onTap: tap, onHover: hover, onGestureStart: () => { hoverLabel(null); setHalo(null); },
   });
   const h = viewer.home();
   viewer.set(h.s, h.tx, h.ty);
   syncDock();
+  if (data.charactersOn) chInit();
+  applySwitches();
   buildRail(); buildSpoilers(); buildAppearance(); buildExport(); buildLegend(); buildMajorTags(); buildMenu();
   search = new Search($('#search'), { data, sp, thumbs, faces: faces(), go: goToResult,
-    glyph: (kind, tier, num) => kind === 'major' ? diamondSVG(24) : glyphSVG(tier, num), tierName: t => TIER[t] });
+    glyph: (kind, tier, num) => kind === 'major' ? diamondSVG(24) : glyphSVG(tier, num), tierName: t => TIER[t],
+    seen: chSeen, charRows: () => chOn(), face: id => CH ? faceHTML(id, 32) : null });
   applyHash(true);
   addEventListener('hashchange', () => applyHash(false));
   window.__timing = { ...(window.__timing || {}), interactive: performance.now() - T0 };
@@ -85,6 +92,7 @@ async function start() {
   body.classList.add('ready');
   window.__timing.ready = performance.now() - T0;
   setTimeout(warmPresets, 1500);   // the other presets' sky, once the page has settled
+  if (chOn()) idle(() => chReady());   // characters.json and the face atlas, before the list is first opened
 }
 
 function index() {
@@ -108,6 +116,8 @@ function setMode(m) {
   body.classList.toggle('phone', phone); body.classList.toggle('land', land);
   applyVars.setMode(m);
   updateSpoilerUI();
+  const cb = $('#b-chars .u-cl');
+  if (cb) cb.textContent = land ? 'Cast' : 'Characters';   // the landscape column is too narrow for the word
 }
 function readSafe() {   // env(safe-area-inset-*) as numbers, through a probe padded with them
   const cs = getComputedStyle($('#safe-probe'));
@@ -122,7 +132,7 @@ function applyVars() {   // theme.yaml `ui` colours and layout.yaml `site` sizes
   const r = document.documentElement.style;
   for (const [k, v] of Object.entries(theme.ui || {})) r.setProperty(`--ui-${k}`, v);
   const px = (k, v) => r.setProperty(k, v + 'px');
-  px('--sz-dock', S.site_dock_h); px('--sz-chip-w', S.site_dock_chip_w); px('--sz-legend', S.site_legend_w); px('--sz-popup', S.site_popup_w);
+  px('--sz-dock', S.site_dock_h); px('--sz-chip-w', S.site_dock_chip_w); px('--sz-legend', S.site_legend_w); px('--sz-popup', S.site_popup_w); px('--sz-chars', S.site_chars_w || 320);
   const setMode = m => {
     const k = { desk: '', phone: '_phone', land: '_land' }[m], ph = m === 'desk' ? '' : '_phone';
     px('--sz-btn', S['site_btn' + k]); px('--sz-bar', S['site_bar_h' + ph]);
@@ -285,6 +295,7 @@ function draw() {
   if (focusArcId) applyFocus(focusArcId, false); else if (focusLineP) applyLineFocus(focusLineP); else if (focusCharName) applyCharFocus(focusCharName, false);
   updateSpoilerUI();
   buildDock();
+  chRefresh();
   tagBlock = null;
   if (viewer) { syncDock(); frame(viewer.view()); }
   window.__timing = { ...(window.__timing || {}), draw: performance.now() - t };
@@ -398,12 +409,10 @@ function frame(v) {
   updateMajorTags(v);
   if (!hoverEl.hidden || tipKey) hoverLabel(null);   // it named what was under the pointer before the camera moved
   if (popState) placePop();
-  if (tips && tips.step !== 'wait' && camMoved(tips.cam)) endTips();   // a pan or zoom ends the events tip
   if (lastS !== v.s) { lastS = v.s; $('#zoom-pct').textContent = `${Math.round(zoomPct(v.s))}%`; }
 }
 function settle(v) {
-  maybeEventTips(v);
-  if (!popState && !viewer.anim && !viewer.pointers.size) setHash(atHome() ? '' : viewHash(v));
+  if (!popState && !viewer.anim && !viewer.pointers.size) setHash(restHash(v));
 }
 
 // ---------------------------------------------------------------- zoom indicator: 100% fits all four lines' cards
@@ -434,6 +443,8 @@ function viewHash(v) {
   const a = viewer.area(), x = ((a.x0 + a.x1) / 2 - v.tx) / v.s, y = ((a.y0 + a.y1) / 2 - v.ty) / v.s;
   return `#@${Math.round(x)},${Math.round(y)},${+zoomPct(v.s).toFixed(1)}`;
 }
+// the address with no popup open: a focused character (#char-<id>), else the camera
+const restHash = (v = viewer.view()) => focusCharName && chOn() ? '#' + focusCharName : atHome() ? '' : viewHash(v);
 function atHome() { const h = viewer.home(); return Math.abs(viewer.s - h.s) < 1e-4 && Math.abs(viewer.tx - h.tx) < 1 && Math.abs(viewer.ty - h.ty) < 1; }
 function popHash(st) {
   if (st.kind === 'ep') return '#' + epNo(epById[st.id].n);
@@ -446,6 +457,11 @@ function applyHash(initial) {
   if ((m = h.match(/^E0*(\d{1,3})$/i)) && epByN[+m[1]]) hit = { kind: 'ep', id: epByN[+m[1]].id };
   else if ((m = h.match(/^ev-(\d+)$/i)) && evByNum[+m[1]] && !sp().later(evByNum[+m[1]].first)) hit = { kind: 'ev', num: +m[1] };
   else if ((m = h.match(/^major-(\d+)$/i)) && data.majors[+m[1] - 1] && !sp().later(data.majors[+m[1] - 1].first)) hit = { kind: 'major', i: +m[1] - 1 };
+  else if (data.charactersOn && /^char-[a-z0-9-]+$/i.test(h)) {
+    if (!chOn()) { chVisit = true; applySwitches(); }   // the feature switched off: on for this visit, not remembered
+    if (!(focusCharName === h.toLowerCase())) chDeepLink(h.toLowerCase());
+    return;
+  }
   else if ((m = h.match(/^@(-?[\d.]+),(-?[\d.]+),([\d.]+)%?$/))) {
     const a = viewer.area(), s = viewer.clampS(+m[3] / 100 * fitScale());
     const t = { s, tx: (a.x0 + a.x1) / 2 - +m[1] * s, ty: (a.y0 + a.y1) / 2 - +m[2] * s };
@@ -472,7 +488,7 @@ addEventListener('resize', () => {
   } else viewer.set(viewer.s, viewer.tx, viewer.ty);
   syncDock();
   lastS = null;
-  if (tips && tips.step !== 'wait') { tips.cam = camNow(); placeTips(); }
+  chSnapChip();
 });
 
 // Variables the panes move by: set on those elements only, never on :root, which would restyle the whole poster.
@@ -547,10 +563,10 @@ function updateRail(v) {
 // the visitor opens it with its toggle (the phone sheet too). It never follows the camera: it scrolls only when it's
 // opened (to the selected event, or else to those in view at that moment) and when an event is selected.
 const dock = $('#dock'), dockRow = $('#dock-row'), dockBtn = $('#dock-btn'), evSheet = $('#events-sheet'), evList = $('#events-list');
-let dockItems = [], dockSel = null, dockCounts = { all: 0, high: 0 };
+let dockItems = [], dockSel = null;
 // The event tiers, biggest first, with one set of names everywhere (popups, tooltips, the dock, search, the Key and the
 // poster's legend). The data keeps its own keys: `majors`, then the events' tier key, notable and minor. Major events and
-// highlights are the gold ones, the story's biggest moments; the dock's "Highlights only" switch shows just those. The
+// highlights are the gold ones, the story's biggest moments. The
 // definitions say what each kind of event is, not how many there are.
 const TIERS = ['major', 'key', 'notable', 'minor'];
 const TIER = { major: 'Major event', key: 'Highlight', notable: 'Notable event', minor: 'Minor event' };
@@ -561,9 +577,6 @@ const tierDef = t => ({
   minor: 'A smaller moment worth knowing.',
 })[t];
 const TIER_CH = { major: '◆', key: '★', notable: '●', minor: '○' };   // for the mark tooltips, which are plain text
-const isHigh = it => it.kind === 'major' || evByNum[it.num].tier === 'key';
-const isHighKey = k => { const [kind, n] = k.split(':'); return isHigh(kind === 'ev' ? { kind, num: +n } : { kind }); };
-const shownInDock = it => !settings.dockHigh || isHigh(it);
 const itemKey = it => it.kind === 'ev' ? `ev:${it.num}` : `major:${it.i}`;
 function diamondSVG(size = 18) {   // the poster's major-event node: a gold square on its corner
   return `<svg class="u-diamond" viewBox="0 0 20 20" width="${size}" height="${size}" aria-hidden="true"><rect x="4.4" y="4.4" width="11.2" height="11.2" rx="1" transform="rotate(45 10 10)" class="u-dia"/></svg>`;
@@ -595,11 +608,11 @@ function dockGlyph(tier, num, veiled = false) {
 function chipHTML(it) {
   if (it.kind === 'major') {
     const m = data.majors[it.i], veiled = sp().later(m.first);
-    return `<button class="u-chip major${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}" data-h="1"${veiled ? ' disabled' : ` title="${TIER.major}" aria-label="${TIER.major}: ${esc(m.full)}"`}>` +
+    return `<button class="u-chip major${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ` title="${TIER.major}" aria-label="${TIER.major}: ${esc(m.full)}"`}>` +
       `<span class="u-gl">${veiled ? dockGlyph('minor', 0, true) : diamondSVG(30)}</span><span class="u-txt">${veiled ? 'Not watched yet' : esc(m.full)}</span></button>`;
   }
   const ev = evByNum[it.num], veiled = sp().later(ev.first);
-  return `<button class="u-chip ${ev.tier}${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}" data-h="${isHigh(it) ? 1 : 0}"${veiled ? ' disabled' : ` title="${TIER[ev.tier]} #${ev.num}" aria-label="${TIER[ev.tier]} ${ev.num}: ${esc(ev.short)}"`}>${dockGlyph(ev.tier, ev.num, veiled)}` +
+  return `<button class="u-chip ${ev.tier}${veiled ? ' veiled' : ''}" data-k="${itemKey(it)}"${veiled ? ' disabled' : ` title="${TIER[ev.tier]} #${ev.num}" aria-label="${TIER[ev.tier]} ${ev.num}: ${esc(ev.short)}"`}>${dockGlyph(ev.tier, ev.num, veiled)}` +
     `<span class="u-txt">${veiled ? 'Not watched yet' : esc(ev.short)}</span></button>`;
 }
 function buildDock() {
@@ -614,29 +627,9 @@ function buildDock() {
   dockItems = items;
   const html = items.map(chipHTML).join('');
   dockRow.innerHTML = html; evList.innerHTML = html;
-  // the switch: "Highlights only", with what the list shows ("Showing all 153 events" / "Showing 15 highlights"; each event
-  // counted once), set by applyDockTier
-  dockCounts = { all: items.length, high: items.filter(isHigh).length };
-  const sw = `<button class="u-hisw" role="switch" aria-checked="false" title="Show only the major events and highlights, the story's biggest moments">` +
-    `<span class="u-track" aria-hidden="true"></span><span class="u-hilbl">Highlights only</span><small class="u-hicount"></small></button>`;
-  $('#dock-tier').innerHTML = sw; $('#sheet-tier').innerHTML = sw;
-  applyDockTier();
+  syncDockSteps();
   if (dockSel) selectInDock(dockSel, false);
 }
-function applyDockTier() {   // hides the chips the switch leaves out, in the dock and the phone list
-  for (const list of [dockRow, evList]) for (const c of list.children) c.hidden = settings.dockHigh && c.dataset.h !== '1';
-  const n = dockCounts, count = settings.dockHigh ? `Showing ${n.high} highlight${n.high === 1 ? '' : 's'}` : `Showing all ${n.all} events`;
-  for (const b of $$('.u-hisw')) { b.setAttribute('aria-checked', settings.dockHigh); b.querySelector('.u-hicount').textContent = count; }
-  syncDockSteps();
-}
-function setDockHigh(on, keepScroll = false) {
-  if (on === settings.dockHigh) return;
-  settings.dockHigh = on; saveSettings();
-  applyDockTier();
-  if (keepScroll) return;
-  if (dockSel && !dock.hidden) selectInDock(dockSel, true, 'auto'); else if (!dock.hidden) showInDock();
-}
-for (const el of [$('#dock-tier'), $('#sheet-tier')]) el.addEventListener('click', e => { if (e.target.closest('.u-hisw')) setDockHigh(!settings.dockHigh); });
 function inViewKeys(v) {
   const a = viewer.area(), x0 = -v.tx / v.s, x1 = (v.vw - v.tx) / v.s, y0 = (a.y0 - v.ty) / v.s, y1 = (a.y1 - v.ty) / v.s;
   const keys = new Set();
@@ -646,19 +639,26 @@ function inViewKeys(v) {
   });
   return keys;
 }
-const dockOpen = () => phone ? !evSheet.hidden : settings.dockOpen;
+const dockOpen = () => phone ? !evSheet.hidden : settings.dockOpen && eventsOn();
+// desktop: the bottom row's distance from the bottom of the screen. With the events dock closed, Key, Arcs and Events
+// sit there, level. With it open, Events moves up by a button and the stepper takes its place, the pair centred in the
+// dock's band, and Key and Arcs (and their panels) move above the dock, so its row of events has the full width.
+const fabBottom = () => (S.site_dock_h - 2 * S.site_btn - 8) / 2;
+const eventsOn = () => settings.eventsOn === true;
 function syncDock() {   // the toggle's state, the dock's visibility and the controls it lifts
   const open = dockOpen();
-  dock.hidden = phone || !settings.dockOpen;
+  dock.hidden = phone || !open;
+  $('#dock-steps').hidden = phone || !open;
+  if (!phone && open) $('#dock-steps').style.width = dockBtn.getBoundingClientRect().width + 'px';   // the Events button's width, right below it
+  body.classList.toggle('u-evdock', !phone && open);   // Events moves up a button, Characters above the open dock
   dockBtn.setAttribute('aria-expanded', open);
-  // the legend button sits level with the toggle, or above the open dock
-  setPaneVar('--fab-bottom', phone ? '8px' : settings.dockOpen ? `${S.site_dock_h + 10}px` : `${(S.site_dock_h - S.site_btn) / 2}px`);
-  rail.style.setProperty('--rail-bottom', !phone && settings.dockOpen ? `${S.site_dock_h}px` : '0px');
+  setPaneVar('--fab-bottom', phone ? '8px' : open ? `${S.site_dock_h + 10}px` : `${fabBottom()}px`);
+  rail.style.setProperty('--rail-bottom', !phone && open ? `${S.site_dock_h}px` : '0px');
 }
 function setDockOpen(open) {
   if (phone) {
     if (open) {
-      evSheet.hidden = false; closePop();
+      evSheet.hidden = false; closePop(); chClose();
       const c = evList.querySelector('.u-sel:not([hidden])') || [...evList.children].find(c => !c.hidden && inViewKeys(viewer.view()).has(c.dataset.k));
       evList.scrollTop = c ? c.offsetTop - evList.offsetTop - 8 : 0;
     } else evSheet.hidden = true;
@@ -668,7 +668,10 @@ function setDockOpen(open) {
   syncDock();
   if (open && !phone) showInDock();
 }
-function closeSheet() { if (!evSheet.hidden) { evSheet.hidden = true; syncDock(); } }
+function closeSheet() {   // the events sheet, and on phones the characters sheet (a popup or another sheet takes its place)
+  if (!evSheet.hidden) { evSheet.hidden = true; syncDock(); }
+  if (phone) chClose();
+}
 function showInDock() {   // on opening: the selected chip centred, or else the run of chips in view at this moment
   if (dockSel) return selectInDock(dockSel, true, 'auto');
   const keys = inViewKeys(viewer.view()), chips = [...dockRow.children].filter(c => !c.hidden && keys.has(c.dataset.k));
@@ -677,7 +680,6 @@ function showInDock() {   // on opening: the selected chip centred, or else the 
   dockRow.scrollLeft = b - a > w - 40 ? a - 20 : (a + b) / 2 - w / 2;
 }
 function selectInDock(k, scroll = true, behavior = null) {   // a selected event: marked and centred in the dock (and the phone list)
-  if (settings.dockHigh && !isHighKey(k)) setDockHigh(false, true);   // an event the switch hides turns it off
   dockSel = k;
   for (const list of [dockRow, evList]) for (const c of list.children) c.classList.toggle('u-sel', c.dataset.k === k);
   syncDockSteps();
@@ -714,7 +716,7 @@ swipeToClose(evSheet, () => setDockOpen(false), () => !land);
 // middle of the view.
 function dockStep(d) {
   const st = sp();
-  const list = dockItems.filter(it => shownInDock(it) && !st.later(it.kind === 'ev' ? evByNum[it.num].first : data.majors[it.i].first));
+  const list = dockItems.filter(it => !st.later(it.kind === 'ev' ? evByNum[it.num].first : data.majors[it.i].first));
   if (!list.length) return;
   let k = dockSel ? list.findIndex(it => itemKey(it) === dockSel) : -1, next;
   if (k >= 0) next = list[k + d];
@@ -730,8 +732,8 @@ function dockStep(d) {
 }
 $('#dock-prev').addEventListener('click', () => dockStep(-1));
 $('#dock-next').addEventListener('click', () => dockStep(1));
-function syncDockSteps() {   // disabled at either end of the filtered list
-  const list = dockItems.filter(shownInDock), k = dockSel ? list.findIndex(it => itemKey(it) === dockSel) : -1;
+function syncDockSteps() {   // disabled at either end of the list
+  const list = dockItems, k = dockSel ? list.findIndex(it => itemKey(it) === dockSel) : -1;
   $('#dock-prev').disabled = k === 0; $('#dock-next').disabled = k >= 0 && k === list.length - 1;
 }
 function openEventFromList(num) {   // from the dock: the event's mark nearest the middle of the view
@@ -924,6 +926,7 @@ document.addEventListener('click', e => {
   if (g && performance.now() < g.t && Math.hypot(e.clientX - g.x, e.clientY - g.y) < 12 && !e.target.closest('#stage')) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 function tap(target, e) {
+  const sheet = phone && chIsOpen();
   closeTransient();
   ghost = e.pointerType !== 'mouse' ? { t: performance.now() + 600, x: e.clientX, y: e.clientY } : null;
   if (e.pointerType !== 'mouse') hoverLabel(null);   // a tapped tooltip (a gap mark's) goes on the next tap
@@ -939,8 +942,7 @@ function tap(target, e) {
     else if (gap) hit = { kind: 'gap' };
     else if (h) hit = hitFromEl(h, e);
   } else hit = nearestHit(e.clientX, e.clientY);
-  tipsTap(hit);
-  if (!hit) { closePop(); unfocusArc(); return false; }
+  if (!hit) { if (popState) closePop(); else if (!sheet) unfocusArc(); return false; }
   if (hit.kind === 'about') { openPanel('about'); return true; }
   if (hit.kind === 'gap') { closePop(); if (e.pointerType !== 'mouse') tapTip(GAP_TEXT, e); return true; }
   if (hit.kind === 'arc') { closePop(); focusArc(hit.arc); return true; }
@@ -1056,6 +1058,7 @@ function openPop(hit, { glide = false, nav = false, fly = false, instant = false
     if (hit.box && (glide || phone)) glideTo(popState, false, true);
     placePop(); return;
   }
+  if (focusCharName) chSyncChip();
   highlight(hit.kind, hit.kind === 'ep' ? hit.id : hit.kind === 'ev' ? hit.num : hit.i);
   if (hit.kind === 'ev') pulse(hit.num);
   if (hit.kind === 'ep') unselectInDock(); else selectInDock(itemKey(hit));
@@ -1072,7 +1075,7 @@ function popClass() {
 function freeArea(st) {   // the part of the poster's area an open popup leaves for its anchor
   const a = viewer.area();
   if (land) return { ...a, x1: Math.max(a.x0 + 80, innerWidth - colW() - st.w - 8) };
-  return phone ? { ...a, y1: innerHeight - st.h } : a;
+  return phone ? { ...a, y1: innerHeight - st.h } : { ...a, x1: deskRight() };
 }
 function relayoutPop() {   // after a rotation: the popup's new form, its anchor brought into view
   const st = popState;
@@ -1116,16 +1119,16 @@ function placePop() {
     if (x1 < 0 || x0 > vw || y1 < 0 || y0 > vh || z > S.site_popup_close_zoom || z < 1 / S.site_popup_close_zoom) return closePop(false, true);
   }
   if (phone) return;
-  const w = st.w, h = st.h, g = S.site_popup_gap + S.site_popup_arrow, m = 8, top = insets().top;
+  const w = st.w, h = st.h, g = S.site_popup_gap + S.site_popup_arrow, m = 8, top = insets().top, pr = deskRight() + m;   // pr: left of the characters dock
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-  const clampY = y => Math.min(vh - m - h, Math.max(top, y)), clampX = x => Math.min(vw - m - w, Math.max(m, x));
+  const clampY = y => Math.min(vh - m - h, Math.max(top, y)), clampX = x => Math.min(pr - m - w, Math.max(m, x));
   let side, x, y;
-  if (x1 + g + w <= vw - m) { side = 'right'; x = x1 + g; y = clampY(cy - h / 2); }
+  if (x1 + g + w <= pr - m) { side = 'right'; x = x1 + g; y = clampY(cy - h / 2); }
   else if (x0 - g - w >= m) { side = 'left'; x = x0 - g - w; y = clampY(cy - h / 2); }
   else if (y1 + g + h <= vh - m) { side = 'below'; y = y1 + g; x = clampX(cx - w / 2); }
   else if (y0 - g - h >= top) { side = 'above'; y = y0 - g - h; x = clampX(cx - w / 2); }
   else {   // no side has room: the roomier of left and right, over the edge of the anchor at worst
-    side = vw - x1 > x0 ? 'right' : 'left';
+    side = pr - x1 > x0 ? 'right' : 'left';
     x = side === 'right' ? clampX(x1 + g) : clampX(x0 - g - w); y = clampY(cy - h / 2);
   }
   pop.dataset.side = side;
@@ -1143,12 +1146,17 @@ function closePop(keepHash = false, auto = false) {   // auto: the camera moved 
   highlight(null);
   if (wasLine) syncLineLit();
   if (!auto) unselectInDock();
-  if (!keepHash) setHash(atHome() ? '' : viewHash(viewer.view()));
-  tipsPopClosed();
+  if (!keepHash) setHash(restHash());
+  chSnapChip();   // in landscape the chip recentres when the side panel goes
 }
 
 // previous / next: episodes along the same protagonist's line in story order; events by number; majors by x
 function sequence(st) {
+  const cf = st.kind === 'ep' && focusCharName && chById && chById.get(focusCharName);
+  if (cf) {
+    const eps = chSeen(cf).eps;
+    if (eps.some(e => e.id === st.id)) return { list: eps.map(e => ({ kind: 'ep', id: e.id })), label: `${cf.name}'s episodes`, at: x => x.id === st.id };
+  }
   if (st.kind === 'ep') { const p = epById[st.id].creator; return { list: lineEps[p].filter(e => !hiddenN(e.n)).map(e => ({ kind: 'ep', id: e.id })), label: `${p}'s line`, at: x => x.id === st.id }; }
   if (st.kind === 'ev') return { list: data.events.filter(e => !sp().later(e.first)).map(e => ({ kind: 'ev', num: e.num })), label: 'Events', at: x => x.num === st.num };
   return { list: majorsByX.filter(m => !sp().later(m.first)).map(m => ({ kind: 'major', i: m.i })), label: 'Major events', at: x => x.i === st.i };
@@ -1178,7 +1186,8 @@ function epHTML(ep) {
   return `<div class="u-pophead"><span class="u-badge" style="background:${arcColor(ep.arc)}">${epNo(ep.n)}</span><strong>${esc(ep.title)}</strong></div>` +
     `<div class="u-popmeta">${esc(ep.creator)} · ${esc(ep.date)} · ${esc(ep.dur)}${arc}</div>` +
     (ep.summary ? `<p>${esc(ep.summary)}</p>` : '<p class="u-muted">No summary yet.</p>') +
-    (yt ? `<a class="u-watch" href="${yt}" target="_blank" rel="noopener">▶ Watch on YouTube</a>` : '') + navHTML(st);
+    (yt ? `<a class="u-watch" href="${yt}" target="_blank" rel="noopener">▶ Watch on YouTube</a>` : '') +
+    chRowHTML(chInEp(ep), 'In this episode') + navHTML(st);
 }
 function lineHTML(p) {   // a protagonist's card: their episodes, their arcs (each focuses it), and where to go on their line
   const st = sp(), eps = lineEps[p].filter(e => !st.later(e.n)), join = joinEp(p);
@@ -1213,13 +1222,13 @@ function evHTML(ev) {
   return `<div class="u-pophead"><span class="u-badge tier-${ev.tier}">#${ev.num}</span><strong>${esc(ev.name)}</strong></div>` +
     tierLine(ev.tier, tierGlyph(ev.tier)) +
     `<div class="u-popmeta">${ev.protags.map(esc).join(', ')}</div>` +
-    `<p>${esc(ev.desc || ev.short)}</p><ul class="u-eps">${epList(ev.episodes)}</ul>` + navHTML({ kind: 'ev', num: ev.num });
+    `<p>${esc(ev.desc || ev.short)}</p><ul class="u-eps">${epList(ev.episodes)}</ul>` + chRowHTML(chInEvent('ev', ev.num), 'Involves') + navHTML({ kind: 'ev', num: ev.num });
 }
 function majorHTML(ev) {
   const i = data.majors.indexOf(ev);
   return `<div class="u-pophead"><span class="u-badge-dia">${diamondSVG(18)}</span><strong>${esc(ev.full)}</strong></div>` +
     tierLine('major', diamondSVG(16)) + `<div class="u-popmeta">${ev.protags.map(esc).join(', ')}</div>` + (ev.desc ? `<p>${esc(ev.desc)}</p>` : '') +
-    `<ul class="u-eps">${epList(ev.episodes)}</ul>` + navHTML({ kind: 'major', i });
+    `<ul class="u-eps">${epList(ev.episodes)}</ul>` + chRowHTML(chInEvent('major', i), 'Involves') + navHTML({ kind: 'major', i });
 }
 
 pop.addEventListener('click', e => {
@@ -1233,6 +1242,15 @@ pop.addEventListener('click', e => {
   }
   const nav = e.target.closest('[data-nav]');
   if (nav) return navStep(+nav.dataset.nav);
+  const more = e.target.closest('[data-chmore]');
+  if (more) {   // "+N more": the rest of the row, in place
+    for (const c of pop.querySelectorAll('.u-pc[hidden]')) c.hidden = false;
+    more.remove();
+    if (popState) { popState.h = pop.offsetHeight; placePop(); }
+    return;
+  }
+  const pc = e.target.closest('.u-pc[data-cid]');
+  if (pc) return chPick(pc.dataset.cid);
   const go = e.target.closest('[data-go]');
   if (go) return openPop({ kind: 'ep', id: go.dataset.go }, { nav: true });
   const ln = e.target.closest('[data-line]');
@@ -1245,7 +1263,7 @@ swipeToClose(pop, closePop, () => phone && !land);
 // ---------------------------------------------------------------- search
 function goToResult(r) {
   closeDialogs();
-  if (r.kind === 'char') { closePop(); return focusChar(r.id); }
+  if (r.kind === 'char') { closePop(); return chPick(r.id); }
   if (r.kind === 'arc') { if (focusArcId === r.arc) applyFocus(r.arc, true); else focusArc(r.arc); return; }
   if (r.kind === 'line') {
     closePop();
@@ -1256,7 +1274,6 @@ function goToResult(r) {
   openPop(r.kind === 'ep' ? { kind: 'ep', id: r.id } : r.kind === 'ev' ? { kind: 'ev', num: r.num } : { kind: 'major', i: r.i }, { fly: true });
 }
 function openSearch() {
-  endTips();
   closeDialogs(); closePop(); closeSheet();
   if (!phone) {   // desktop: the panel opens over the search field, as if the field grew
     const r = $('#b-search').getBoundingClientRect(), w = Math.min(480, innerWidth - 20);
@@ -1273,27 +1290,31 @@ $('#search').addEventListener('click', e => { if (e.target.id === 'search') sear
 let focusArcId = null, focusLineP = null, focusCharName = null;
 function focusArc(arc, fly = true) {
   if (focusArcId === arc && fly) return unfocusArc();
+  const was = focusCharName;
   focusArcId = arc; focusLineP = null; focusCharName = null;
+  if (was) chFocusEnded();
   applyFocus(arc, fly);
 }
 function focusLine(p) {   // everything not on p's line dims; the camera stays
   if (focusLineP === p) return unfocusArc();
+  const was = focusCharName;
   focusArcId = null; focusLineP = p; focusCharName = null;
+  if (was) chFocusEnded();
   applyLineFocus(p);
 }
-// Character focus (from search): every episode, event and major event that doesn't involve the character dims. The
-// index is data.characters, built from kb/ by build_site.py (characters(): an episode involves whoever its wiki page
-// links; an event, whoever its text names). The lines stay; the camera takes in all of it. `id` is the character's id.
+// Character focus (the characters feature): everything that doesn't involve the character dims: their watched
+// episodes, events and major events stay lit (chSeen). The lines stay. The character chip replaces the focus chip.
 function focusChar(id, fly = true) {
-  focusArcId = null; focusLineP = null; focusCharName = id;
+  if (!chOn()) return;   // no character focus without the characters feature
+  focusArcId = null; focusLineP = null; focusCharName = id; chStepK = -1;
   applyCharFocus(id, fly);
 }
 // The major events' edge tags dim with the rest of a major event: mjs is the set of those in focus, or null for none
 function dimTags(mjs) { tagEls.forEach((el, i) => el.classList.toggle('u-dim', !!mjs && !mjs.has(i))); }
 function applyCharFocus(id, fly) {
-  const c = (data.characters || []).find(x => x.id === id);
-  if (!c) return unfocusArc();
-  const eps = new Set(c.eps), evs = new Set(c.evs), mjs = new Set(c.majors);
+  const c = chById && chById.get(id), sn = c && chSeen(c);
+  if (!sn || !sn.eps.length) return unfocusArc();   // not introduced yet (spoiler mode)
+  const eps = new Set(sn.eps.map(e => e.id)), evs = new Set(sn.evs), mjs = new Set(sn.mjs);
   for (const el of idx.dim) {
     const d = el.dataset;
     const inF = d.pl != null || (d.ep && eps.has(d.ep)) || (d.num && evs.has(+d.num)) || (d.stem && evs.has(+d.stem)) || (d.mjl != null && mjs.has(+d.mjl));
@@ -1301,17 +1322,22 @@ function applyCharFocus(id, fly) {
   }
   host.firstElementChild.classList.add('focusing');
   dimTags(mjs);
-  const chip = $('#focus-chip');
-  chip.textContent = `✕ ${c.name}`; chip.hidden = false; tagBlock = null;
+  $('#focus-chip').hidden = true; tagBlock = null;
   $$('.u-lgarc').forEach(b => b.classList.remove('on'));
+  chSyncChip();
+  if (!popState) setHash(restHash());
   if (!fly) return;
-  const st = sp(), es = c.eps.map(i => epById[i]).filter(e => e && !hiddenN(e.n));
-  const ms = data.marks.filter(m => evs.has(m.num) && !st.later(m.first));
-  for (const i of mjs) { const m = data.majors[i]; if (!st.later(m.first)) ms.push(...m.node_ys.map(y => ({ x: m.x, y }))); }
-  if (!es.length && !ms.length) return;
+  if (phone) {   // a phone flies to the first watched appearance, in the space the sheet or side panel leaves
+    const e = sn.eps[0], f = freeView(), sc = land ? S.site_search_scale_land : S.site_search_scale;
+    return viewer.animateTo(viewer.centreOn(e.L + S.card_w / 2, e.top + e.h / 2, sc, (f.y0 + f.y1) / 2, (f.x0 + f.x1) / 2), 700);
+  }
+  // desktop: all of it, left of the characters dock
+  const ms = data.marks.filter(m => evs.has(m.num));
+  for (const i of mjs) ms.push(...data.majors[i].node_ys.map(y => ({ x: data.majors[i].x, y })));
+  const es = sn.eps;
   const x0 = Math.min(...es.map(e => e.L), ...ms.map(m => m.x - 40)), x1 = Math.max(...es.map(e => e.L + S.card_w), ...ms.map(m => m.x + 40));
   const y0 = Math.min(...es.map(e => e.top), ...ms.map(m => m.y - 40)), y1 = Math.max(...es.map(e => e.top + e.h), ...ms.map(m => m.y + 40));
-  viewer.focusBox(x0, y0, x1, y1, 0.9);
+  viewer.focusBox(x0, y0, x1, y1, 0.9, freeView());
 }
 function applyLineFocus(p) {
   for (const el of idx.dim) {
@@ -1347,10 +1373,12 @@ function applyFocus(arc, fly) {
   const eps = [...members].map(i => epById[i]);
   const x0 = Math.min(...brs.map(b => b.lo), ...eps.map(e => e.L)), x1 = Math.max(...brs.map(b => b.hi), ...eps.map(e => e.L + S.card_w));
   const y0 = Math.min(...brs.map(b => b.y - b.h), ...eps.map(e => e.top)), y1 = Math.max(...brs.map(b => b.y + b.h), ...eps.map(e => e.top + e.h));
-  viewer.focusBox(x0, y0, x1, y1, 0.9);
+  viewer.focusBox(x0, y0, x1, y1, 0.9, freeView());
 }
 function unfocusArc() {   // clears any focus: an arc's, a line's or a character's
+  const was = focusCharName;
   focusArcId = null; focusLineP = null; focusCharName = null;
+  if (was) chFocusEnded();
   const svg = host.firstElementChild;
   if (svg) svg.classList.remove('focusing');
   dimTags(null);
@@ -1358,6 +1386,335 @@ function unfocusArc() {   // clears any focus: an arc's, a line's or a character
   $$('.u-lgarc').forEach(b => b.classList.remove('on'));
 }
 $('#focus-chip').addEventListener('click', unfocusArc);
+
+// ---------------------------------------------------------------- the characters feature (layout.yaml site.characters)
+// An index of who is in the story, never drawn on the poster (site/reviews/characters-ux.md): the Characters button,
+// the characters dock (a list, or one character's card), character focus with its chip, and the "In this episode" and
+// "Involves" rows in popups. The index (data.characters: episodes, events, major events, hidden disguises) comes with
+// poster.json; descriptions and the face atlas (characters.json) load in idle time after the page is ready. Nothing
+// here exists when data.charactersOn is false.
+let CH = null, chLoading = null;   // characters.json once loaded: {atlas, cols, cell, rows, chars: {id: {d, f, last}}}
+let chById = null;                 // id -> data.characters entry (built at startup: search and focus need it at once)
+let chByEp = null, chByEv = null, chByMj = null;   // episode id / event number / major index -> the characters in it
+let chView = 'list', chCardId = null, chStepK = -1, chListKey = null, chNote = '';
+let chRevealed = null;             // the card whose blurred description the visitor showed, while it stays open
+const chQ = () => $('#ch-q') || { value: '' };
+const chPanel = () => $('#chars');
+const chIsOpen = () => !!chPanel() && !chPanel().hidden;
+let chVisit = false;   // a #char- link turned the feature on for this visit only
+const chOn = () => !!data && data.charactersOn && (settings.charsOn === true || chVisit);   // the build flag and the visitor's switch
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const chNorm = t => String(t).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[\s_.\-'’]/g, '');
+function chIndex() {
+  chById = new Map((data.characters || []).map(c => [c.id, c]));
+  chByEp = new Map(); chByEv = new Map(); chByMj = new Map();
+  const add = (m, k, c) => { if (!m.has(k)) m.set(k, []); m.get(k).push(c); };
+  for (const c of data.characters || []) {
+    for (const e of c.eps) add(chByEp, e, c);
+    for (const n of c.evs) add(chByEv, n, c);
+    for (const i of c.majors) add(chByMj, i, c);
+  }
+}
+// What a visitor may see of a character, for the current spoiler setting: their watched episodes (in number order,
+// story order), events and major events, minus a disguised appearance (`hidden`) until the episode revealing it is
+// watched. A character with no watched episode isn't introduced yet. Cached per spoiler setting.
+let chSeenCache = new Map(), chSeenKey = null;
+function chSeen(c) {
+  const st = sp(), key = String(st.N);
+  if (key !== chSeenKey) { chSeenCache = new Map(); chSeenKey = key; }
+  let r = chSeenCache.get(c.id);
+  if (r) return r;
+  const dark = id => { const u = c.hidden && c.hidden[id]; return !!u && st.later(epById[u] ? epById[u].n : +u.slice(1)); };
+  const evDark = eps => eps.some(dark);
+  r = {
+    eps: c.eps.map(i => epById[i]).filter(e => e && !st.later(e.n) && !dark(e.id)).sort((a, b) => a.n - b.n),
+    evs: c.evs.filter(n => evByNum[n] && !st.later(evByNum[n].first) && !evDark(evByNum[n].episodes)),
+    mjs: c.majors.filter(i => !st.later(data.majors[i].first) && !evDark(data.majors[i].episodes)),
+  };
+  chSeenCache.set(c.id, r);
+  return r;
+}
+// A face from the atlas: an element `size` px square showing the character's 8x8 cell, scaled by whole pixels where
+// it can be (image-rendering: pixelated). Each cell is `cell` px with the face centred in it.
+function faceHTML(id, size) {
+  const c = CH && CH.chars[id];
+  if (!c) return `<span class="u-cf u-cf0" style="--s:${size}px" aria-hidden="true"></span>`;
+  const k = c.f, o = (CH.cell - 8) / 2, fx = ((k % CH.cols) * CH.cell + o) / 8, fy = (Math.floor(k / CH.cols) * CH.cell + o) / 8;
+  return `<span class="u-cf" style="--s:${size}px;--fx:${fx};--fy:${fy};--aw:${CH.cols * CH.cell / 8}" aria-hidden="true"></span>`;
+}
+function chReady() {   // characters.json and the atlas, decoded, so no face pops in
+  if (!chLoading) chLoading = (async () => {
+    const j = await fetch(CONFIG.characters).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    const img = new Image(); img.src = j.atlas;
+    await img.decode().catch(() => {});
+    keepDecoded.push(img);
+    for (const el of [chPanel(), $('#char-chip'), pop, $('#search')]) el.style.setProperty("--atlas", `url("${new URL(j.atlas, location.href).href}")`);   // not on :root, which would restyle the poster
+    CH = j;
+  })().catch(err => { console.warn('characters', err); chLoading = null; });
+  return chLoading;
+}
+const ICON_PERSON = '<svg class="u-charic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>';
+function chInit() {
+  chIndex();
+  body.insertAdjacentHTML('beforeend',
+    `<button id="b-chars" class="u-pillbtn u-ctl" aria-expanded="false" aria-controls="chars" title="Everyone in the story">${ICON_PERSON}<span class="u-cl">${land ? 'Cast' : 'Characters'}</span></button>` +
+    `<section id="chars" class="u-chars" role="dialog" aria-label="Characters" hidden><div class="u-handle"></div>` +
+    `<div id="ch-list-view"><div class="u-chhead"><h2 class="u-h">Characters</h2><button class="u-chx" aria-label="Close">×</button></div>` +
+    `<input id="ch-q" type="search" placeholder="Search for a character" autocomplete="off" spellcheck="false" aria-label="Search for a character">` +
+    `<div class="u-chbody"><p class="u-chnote" hidden></p><div id="ch-list"></div><p class="u-hint u-chempty" hidden></p></div><p class="u-chfoot" hidden></p></div>` +
+    `<div id="ch-card-view" hidden></div></section>` +
+    `<div id="char-chip" role="group" aria-label="Character focus" hidden><button class="u-ccstep" data-cc="-1" aria-label="Previous episode with this character">◀</button>` +
+    `<button class="u-ccname" title="Show their card"></button><button class="u-ccstep" data-cc="1" aria-label="Next episode with this character">▶</button>` +
+    `<button class="u-ccx" aria-label="Stop showing only this character">✕</button></div>`);
+  $('#b-chars').addEventListener('click', () => chIsOpen() ? chClose() : chOpen());
+  const panel = chPanel();
+  panel.addEventListener('click', e => {
+    if (e.target.closest('.u-chx')) return chClose();
+    if (e.target.closest('.u-chback')) { unfocusArc(); return chShowList(); }
+    const row = e.target.closest('.u-crow');
+    if (row) return chPick(row.dataset.cid);
+    if (e.target.closest('.u-chreveal')) { chRevealed = chCardId; return chShowCard(chCardId); }
+    const chip = e.target.closest('.u-chip');
+    if (chip && !chip.disabled) chipOpen(chip);   // exactly what the events dock does
+  });
+  const cardView = $('#ch-card-view');
+  cardView.addEventListener('pointerover', chipEnter);
+  cardView.addEventListener('pointerout', e => { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.u-chip')) { if (!popState) highlight(null); } });
+  const q = $('#ch-q');
+  q.addEventListener('input', () => chFilter());
+  q.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); const r = [...$$('#ch-list .u-crow')].find(r => !r.hidden); if (r) chPick(r.dataset.cid); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (q.value) chClearQ(); else { q.blur(); escape(); } }
+  });
+  // portrait: a downward swipe on the sheet's top (its handle and header) closes it
+  let y0 = null;
+  panel.addEventListener('pointerdown', e => { y0 = phone && !land && e.pointerType !== 'mouse' && !e.target.closest('.u-chbody, #ch-card-view .u-chcard') ? e.clientY : null; });
+  panel.addEventListener('pointerup', e => { if (y0 != null && e.clientY - y0 > 60) chClose(); y0 = null; });
+  panel.addEventListener('pointercancel', () => { y0 = null; });
+  const chip = $('#char-chip');
+  chip.addEventListener('click', e => {
+    if (e.target.closest('.u-ccx')) return unfocusArc();
+    const st = e.target.closest('[data-cc]');
+    if (st) return chStep(+st.dataset.cc);
+    if (e.target.closest('.u-ccname') && focusCharName) { chShowCard(focusCharName); chOpen(); }
+  });
+}
+async function chOpen() {   // the dock (desktop), the sheet (portrait) or the side panel (landscape), as last shown
+  await chReady();
+  if (!CH) return;
+  closeDialogs();
+  if (phone) { closePop(); if (!evSheet.hidden) { evSheet.hidden = true; syncDock(); } }
+  chPanel().hidden = false;
+  if (chView === 'card' && chCardId) chShowCard(chCardId); else chShowList(chNote);
+  chSync();
+}
+function chClose() {
+  const p = chPanel();
+  if (!p || p.hidden) return;
+  p.hidden = true; chNote = '';
+  chSync();
+}
+function chSync() {   // the button's state; a desktop popup moves clear of the dock
+  const open = chIsOpen();
+  $('#b-chars').setAttribute('aria-expanded', open);
+  body.classList.toggle('u-chopen', open);
+  chPanel().classList.toggle('u-oncard', chView === 'card');
+  tagBlock = null;
+  if (!phone && popState) placePop();
+  chSnapChip();   // in landscape and beside the desktop dock the chip moves
+}
+function chShowList(note = '') {
+  chView = 'list'; chCardId = null; chNote = note; chRevealed = null;
+  if (!CH) return;
+  $('#ch-list-view').hidden = false; $('#ch-card-view').hidden = true;
+  const key = String(sp().N);
+  if (chListKey !== key) chBuildList();
+  const n = $('#chars .u-chnote'); n.hidden = !note; n.textContent = note;
+  chFilter();
+  if (chIsOpen()) chSync();
+}
+// The list: the protagonists in face-rail order, then everyone else by watched episodes (most first, ties A-Z), each
+// row a face, the name and the count. Built on first open and again when the spoiler setting has changed; filtering
+// only hides rows.
+function chBuildList() {
+  const st = sp(), all = (data.characters || []).filter(c => c.eps.length);
+  const shown = all.map(c => ({ c, n: chSeen(c).eps.length })).filter(x => x.n);
+  const prot = data.lines.map(l => shown.find(x => x.c.name === l.p)).filter(Boolean);
+  const rest = shown.filter(x => !prot.includes(x)).sort((a, b) => b.n - a.n || a.c.name.localeCompare(b.c.name, undefined, { sensitivity: 'base' }));
+  const row = (x, g) => `<button class="u-crow" data-cid="${esc(x.c.id)}" data-g="${g}" data-k="${esc(chNorm(x.c.name))}">${faceHTML(x.c.id, 24)}` +
+    `<span class="u-cn">${esc(x.c.name)}</span><span class="u-cc" title="${plural(x.n, st.N != null ? 'watched episode' : 'episode')}">${x.n}</span></button>`;
+  const head = (g, t) => `<div class="u-chgrp" data-g="${g}"><span>${t}</span><span class="u-chcol" aria-hidden="true">Episodes</span></div>`;   // the counts' column, named
+  $('#ch-list').innerHTML = (prot.length ? head('p', 'Protagonists') + prot.map(x => row(x, 'p')).join('') : '') +
+    (rest.length ? head('o', 'Everyone else') + rest.map(x => row(x, 'o')).join('') : '');
+  const later = all.length - shown.length, foot = $('#chars .u-chfoot');   // the spoiler footer: who appears later
+  foot.hidden = st.N == null || !later;
+  if (!foot.hidden) foot.innerHTML = `<b>${later}</b> more character${later === 1 ? ' appears' : 's appear'} after ${epNo(st.N)}.`;
+  chListKey = String(st.N);
+}
+function chFilter() {   // the dock's field: a substring of the name, ignoring case, accents and separators
+  const raw = chQ().value.trim(), q = chNorm(raw), rq = raw.toLowerCase(), rows = $$('#ch-list .u-crow');
+  let any = false;
+  const seen = { p: false, o: false };
+  // a query of separators only ("___" for ______) matches the names as typed
+  const hit = r => q ? r.dataset.k.includes(q) : r.querySelector('.u-cn').textContent.toLowerCase().includes(rq);
+  for (const r of rows) { r.hidden = !!raw && !hit(r); if (!r.hidden) { any = true; seen[r.dataset.g] = true; } }
+  for (const g of $$('#ch-list .u-chgrp')) g.hidden = !seen[g.dataset.g];
+  const em = $('#chars .u-chempty');
+  em.hidden = any || !raw;
+  if (!em.hidden) em.textContent = `No character matches “${raw}”${sp().N != null ? ' in what you’ve watched' : ''}.`;
+}
+function chClearQ() { chQ().value = ''; chFilter(); }
+// The card: face, name, counts, the description (behind a click-to-reveal spoiler while their last appearance is
+// unwatched) and their events as events-dock rows, in story order.
+function chShowCard(id) {
+  const c = chById.get(id);
+  if (!c || !CH) return;
+  chView = 'card'; chCardId = id; chNote = '';
+  const st = sp(), sn = chSeen(c), info = CH.chars[id] || {}, n = sn.eps.length, ne = sn.evs.length + sn.mjs.length;
+  const meta = [plural(n, st.N != null ? 'watched episode' : 'episode'), ne ? plural(ne, 'event') : ''].filter(Boolean).join(' · ');
+  if (chRevealed !== id) chRevealed = null;   // another card: blurred again
+  const open = st.N == null || info.last <= st.N || chRevealed === id;
+  const desc = !info.d ? '' : open ? `<p class="u-chdesc">${esc(info.d)}</p>`
+    : `<div class="u-chspoil"><p class="u-chdesc u-blur" aria-hidden="true">${esc(info.d)}</p><button class="u-chreveal">Description may contain spoilers · <b>show</b></button></div>`;
+  const evs = new Set(sn.evs), mjs = new Set(sn.mjs);
+  const items = chStoryItems().filter(it => it.kind === 'ev' ? evs.has(it.num) : mjs.has(it.i));
+  $('#ch-card-view').innerHTML = `<div class="u-chhead"><button class="u-chback">‹ All characters</button><button class="u-chx" aria-label="Close">×</button></div>` +
+    `<div class="u-chcard"><div class="u-chid">${faceHTML(id, 48)}<div><div class="u-chname">${esc(c.name)}</div><div class="u-popmeta">${meta}</div></div></div>` +
+    desc +
+    (items.length ? `<div class="u-lgh">Events (${items.length})</div><div class="u-chevs">${items.map(chipHTML).join('')}</div>` : '') + '</div>';
+  $('#ch-list-view').hidden = true; $('#ch-card-view').hidden = false;
+  $('#ch-card-view .u-chcard').scrollTop = 0;
+  if (chIsOpen()) chSync();
+}
+let chItems = null;
+function chStoryItems() {   // every numbered and major event in the events dock's order (story order), whatever the spoiler setting
+  if (chItems) return chItems;
+  const items = data.events.map(ev => { const m = data.marks.find(mk => mk.num === ev.num); return { kind: 'ev', num: ev.num, x: m ? m.x : 0, ord: 0 }; });
+  data.majors.forEach((m, i) => items.push({ kind: 'major', i, x: m.x, ord: 1 }));
+  return (chItems = items.sort((a, b) => a.x - b.x || a.ord - b.ord || (a.num || 0) - (b.num || 0)));
+}
+// Picking a character (a list row, a popup's row, a search result, a deep link): their card, and their focus
+async function chPick(id) {
+  await chReady();
+  const c = chById.get(id);
+  if (!c || !CH) return;
+  if (!chSeen(c).eps.length) return;   // not introduced yet: never offered, but a stale row or link must not reveal them
+  chShowCard(id);
+  await chOpen();
+  focusChar(id, true);
+}
+async function chDeepLink(id) {   // #char-<id>: their card and focus, or, for a later character, the list and a note
+  await chReady();
+  const c = chById && chById.get(id);
+  if (!c || !CH || !c.eps.length) return;
+  if (chSeen(c).eps.length) return chPick(id);
+  chView = 'list'; chQ().value = '';
+  await chOpen();
+  chShowList(`That character appears after ${epNo(sp().N)}.`);
+}
+function chFocusEnded() {   // a character's focus ended: no chip; their card goes back to the list
+  if (!data.charactersOn) return;
+  $('#char-chip').hidden = true; tagBlock = null;
+  if (chView === 'card') chShowList();
+  if (!popState) setHash(restHash());
+}
+// The character chip: ◀ face name · n episodes ▶ ✕, or "k / n" once stepping. ◀ ▶ walk the watched episodes in story
+// order, each opening its popup with the camera on it.
+function chSyncChip() {
+  const chip = $('#char-chip'), c = focusCharName && chById.get(focusCharName);
+  if (!chip) return;
+  if (!c) { chip.hidden = true; return; }
+  const eps = chSeen(c).eps;
+  if (popState && popState.kind === 'ep') { const k = eps.findIndex(e => e.id === popState.id); if (k >= 0) chStepK = k; }
+  chip.querySelector('.u-ccname').innerHTML = `${faceHTML(c.id, 24)}<span class="u-ccn">${esc(c.name)}</span>` +
+    `<span class="u-ccm">· ${chStepK >= 0 ? `${chStepK + 1} / ${eps.length}` : plural(eps.length, 'episode')}</span>`;
+  const [prev, next] = chip.querySelectorAll('.u-ccstep');
+  prev.disabled = chStepK <= 0; next.disabled = chStepK >= eps.length - 1;
+  chip.hidden = false; tagBlock = null;
+  chSnapChip();
+}
+// The chip is centred in the space its row leaves: between the controls on its left and right in that row (desktop:
+// the zoom buttons and the search field; landscape: the button column), and clear of the characters dock and a
+// landscape side popup when they reach its row; otherwise between the screen's (the poster area's) edges. The gaps
+// either side are equal. It is placed on whole device pixels: at a fraction of a pixel its 8x8 face comes out with
+// uneven pixels, as if off-centre.
+// The chip's neighbours move: the toolbar slides when the face rail comes and goes, and the zoom level and the spoiler
+// chip change width. It follows them.
+$('#bar').addEventListener('transitionend', e => { if (e.target.id === 'bar') chSnapChip(); });
+if (window.ResizeObserver) { const ro = new ResizeObserver(() => chSnapChip()); for (const e of $$('#bar > :not(.u-grow)')) ro.observe(e); }
+function chSnapChip() {
+  const chip = $('#char-chip');
+  if (!chip || chip.hidden || !viewer) return;
+  const a = viewer.area(), dpr = devicePixelRatio || 1, snap = v => Math.round(v * dpr) / dpr, portrait = phone && !land;
+  let x0 = portrait ? 0 : a.x0, x1 = innerWidth;   // the landscape column, as a neighbour, limits it below
+  chip.style.transform = 'none';
+  const r = chip.getBoundingClientRect(), mid = (x0 + x1) / 2;
+  const others = [...$$('#bar > :not(.u-grow)'), chPanel(), land && popState ? pop : null]
+    .filter(e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).display !== 'none');
+  for (const e of others) {
+    const q = e.getBoundingClientRect();
+    if (!q.width || q.bottom <= r.top || q.top >= r.bottom) continue;   // not in the chip's row
+    if ((q.left + q.right) / 2 < mid) x0 = Math.max(x0, q.right); else x1 = Math.min(x1, q.left);
+  }
+  chip.style.maxWidth = `${Math.max(160, x1 - x0 - 16)}px`;
+  const w = chip.getBoundingClientRect().width;
+  chip.style.left = `${snap((x0 + x1 - w) / 2)}px`;
+  chip.style.transform = `translateY(${(snap(r.top) - r.top).toFixed(3)}px)`;
+  const f = chip.querySelector('.u-cf');   // and the face inside it (the landscape column's buttons, so the chip, can be 41.5 px tall)
+  if (!f) return;
+  f.style.transform = '';
+  const fr = f.getBoundingClientRect();
+  f.style.transform = `translate(${(snap(fr.left) - fr.left).toFixed(3)}px,${(snap(fr.top) - fr.top).toFixed(3)}px)`;
+}
+function chStep(d) {
+  const c = focusCharName && chById.get(focusCharName);
+  if (!c) return;
+  const eps = chSeen(c).eps, k = Math.max(0, Math.min(eps.length - 1, chStepK < 0 ? 0 : chStepK + d));
+  if (!eps[k] || (k === chStepK && popState && popState.kind === 'ep' && popState.id === eps[k].id)) return;
+  chStepK = k;
+  openPop({ kind: 'ep', id: eps[k].id }, { nav: true });
+}
+function chRefresh() {   // after a spoiler change: the open list or card, and the chip, follow it
+  if (!data.charactersOn) return;
+  chListKey = null;
+  if (chIsOpen()) { if (chView === 'card' && chCardId && chSeen(chById.get(chCardId)).eps.length) chShowCard(chCardId); else chShowList(); }
+  else if (chView === 'card' && chCardId && !chSeen(chById.get(chCardId)).eps.length) chShowList();
+  chSyncChip();
+}
+// The popups' rows: an episode's characters minus its creator ("In this episode"), an event's ("Involves"), ordered by
+// watched episode count, the focused character's chip outlined. A few, then "+N more", which expands in place.
+function chInEp(ep) {
+  if (!CH || sp().later(ep.n)) return [];
+  return (chByEp.get(ep.id) || []).filter(c => c.name !== ep.creator && chSeen(c).eps.some(e => e.id === ep.id));
+}
+function chInEvent(kind, k) {
+  if (!CH) return [];
+  return ((kind === 'ev' ? chByEv : chByMj).get(k) || []).filter(c => { const s = chSeen(c); return s.eps.length && (kind === 'ev' ? s.evs : s.mjs).includes(k); });
+}
+function chRowHTML(cs, title) {
+  if (!cs.length || !chOn()) return '';
+  const order = [...cs].sort((a, b) => chSeen(b).eps.length - chSeen(a).eps.length || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  const max = phone ? S.site_chars_pop_phone : S.site_chars_pop, cut = order.length > max + 1 ? max : order.length;
+  return `<div class="u-chrow"><div class="u-lgh">${title}</div><div class="u-pcs">` +
+    order.map((c, k) => `<button class="u-pc${c.id === focusCharName ? ' u-on' : ''}" data-cid="${esc(c.id)}"${k >= cut ? ' hidden' : ''}>${faceHTML(c.id, 24)}<span>${esc(c.name)}</span></button>`).join('') +
+    (cut < order.length ? `<button class="u-pcmore" data-chmore="1">+${order.length - cut} more</button>` : '') + '</div></div>';
+}
+// The part of the poster area the characters dock (desktop), sheet (portrait) or side panel (landscape) leaves
+function deskRight() { return !phone && chIsOpen() ? Math.max(200, chPanel().getBoundingClientRect().left - 8) : innerWidth; }
+// While the characters dock, sheet or side panel is open, the camera may pan past the poster's right end (bottom in
+// portrait) by the panel's size, so that what it covers can be brought out from under it (view.js room()).
+function panRoom() {
+  if (!viewer || !chIsOpen()) return null;
+  const a = viewer.area(), f = freeView();
+  return { r: Math.max(0, a.x1 - f.x1), b: Math.max(0, a.y1 - f.y1) };
+}
+function freeView() {
+  const a = viewer.area();
+  if (!chIsOpen()) return a;
+  const r = chPanel().getBoundingClientRect();
+  if (phone && !land) return { ...a, y1: Math.max(a.y0 + 80, r.top) };
+  return { ...a, x1: Math.max(a.x0 + 80, r.left - 8) };
+}
 
 // ---------------------------------------------------------------- the Key ("Reading the map") and the Arcs panel
 // The Key explains only what a visitor needs to read the poster, with the poster's own legend glyphs (data.legend.rows:
@@ -1368,7 +1725,7 @@ const GAP_TEXT = 'Time skipped here; length unknown';
 const LEGEND = () => [
   ['Events', [[null, 'The bigger and brighter, the more it matters.'],
     ...TIERS.map(t => [t, `**${TIER[t]}**: ${tierDef(t)[0].toLowerCase()}${tierDef(t).slice(1).replace(/\.$/, '')}`]),
-    [null, `${phone ? 'Tap' : 'Click'} any mark to read it. **Events** lists them all in story order.`]]],
+    [null, `${phone ? 'Tap' : 'Click'} any mark to read it.` + (eventsOn() ? ' **Events** lists them all in story order.' : '')]]],
   ['Episodes', [['card', `**Episode**: its colour is its arc. ${phone ? 'Tap' : 'Click'} it for a summary and the video`], ['beam', '**Beam**: the days a long episode covers']]],
   ['Time', [[null, 'Time runs left to right; the same spot on every line is the same moment.'], ['ticks', '1 tick = 1 day in the story'], ['gap', GAP_TEXT]]],
 ];
@@ -1416,7 +1773,7 @@ function buildMajorTags() {
   for (const el of tagEls) el.hidden = true;
 }
 function tagBlockers() {   // fixed controls the tag row can run into (the focus chip on a phone); cached until one changes
-  if (!tagBlock) tagBlock = $$('#focus-chip, #bar > :not(.u-grow)').filter(el => el.offsetParent !== null).map(el => el.getBoundingClientRect());
+  if (!tagBlock) tagBlock = $$('#focus-chip, #char-chip, #bar > :not(.u-grow)').filter(el => el.offsetParent !== null).map(el => el.getBoundingClientRect());
   return tagBlock;
 }
 function updateMajorTags(v) {
@@ -1445,118 +1802,10 @@ tagBox.addEventListener('click', e => {
 tagBox.addEventListener('pointerover', e => { const t = e.target.closest('.u-mjtag'); if (t && e.pointerType === 'mouse') highlight('major', +t.dataset.i); });
 tagBox.addEventListener('pointerout', e => { if (e.pointerType === 'mouse' && !popState) highlight(null); });
 
-// ---------------------------------------------------------------- the events tip: two steps, once per browser
-// On the first settle zoomed in to site_key_hint_scale or closer, with the page ready, nothing open (popup, dialog,
-// search, events sheet) and a gold mark in view (a highlight's star, else a major event's diamond, watched, clear of the
-// edges and the controls), it waits 600 ms and, if the camera hasn't moved, rings the gold mark nearest the centre with a
-// bubble (step 1); Next rings the Events button (step 2). Tapping a mark in step 1 opens it as usual and step 2 follows
-// 300 ms after its popup closes. Anything else ends it: a pan or zoom, a tap elsewhere, any control, Escape, ✕ or
-// Got it. It never dims the page, moves the camera or takes focus, and never comes back: localStorage seenEventTips is
-// written when step 1 shows. Until then every settle checks again.
-const TIPS_KEY = 'seenEventTips', tipsEl = $('#event-tips'), etRing = $('#et-ring'), etBub = $('#et-bubble');
-let tips = null;   // {step: 1, 2 or 'wait' (a popup the tip led to is open), at: step 1's mark, cam: the camera it was shown at}
-let tipsDone = (() => { try { return localStorage.getItem(TIPS_KEY) === '1'; } catch { return false; } })(), tipsTimer = null;
-const camNow = () => ({ s: viewer.s, tx: viewer.tx, ty: viewer.ty });
-const camMoved = c => Math.abs(viewer.s / c.s - 1) > 1e-6 || Math.abs(viewer.tx - c.tx) > 0.5 || Math.abs(viewer.ty - c.ty) > 0.5;
-function maybeEventTips(v) {
-  if (tipsDone || tips || v.s < S.site_key_hint_scale) return;
-  clearTimeout(tipsTimer);
-  const cam = camNow();
-  tipsTimer = setTimeout(() => {
-    if (tipsDone || tips || camMoved(cam) || viewer.anim || viewer.pointers.size) return;
-    if (!body.classList.contains('ready') || popState || !$('#search').hidden || !evSheet.hidden || $$('.u-dlg').some(p => !p.hidden)) return;
-    const m = goldInView();
-    if (m) showTips(m);
-  }, 600);
-}
-function goldInView() {   // the qualifying gold mark nearest the centre of the poster area, a star before a diamond
-  const a = viewer.area(), st = sp(), M = 60, cx = (a.x0 + a.x1) / 2, cy = (a.y0 + a.y1) / 2;
-  const blocks = $$('#bar > :not(.u-grow), #fabl, #dock-btn, #b-fit2, #focus-chip, #rail.on, #dock:not([hidden]), .u-mjtag:not([hidden])')
-    .filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
-  const clear = (x, y, r) => x - r >= a.x0 + M && x + r <= a.x1 - M && y - r >= a.y0 + M && y + r <= a.y1 - M &&
-    !blocks.some(b => x + r > b.left && x - r < b.right && y + r > b.top && y - r < b.bottom);
-  const cands = data.marks.filter(m => m.tier === 'key' && !st.later(m.first)).map(m => ({ x: m.x, y: m.y, r: m.r, star: true }));
-  for (const m of data.majors) if (!st.later(m.first)) for (const y of m.node_ys) cands.push({ x: m.x, y, r: S.event_node * Math.SQRT1_2, star: false });
-  let best = null, bd = Infinity;
-  for (const c of cands) {
-    const [sx, sy] = viewer.toScreen(c.x, c.y);
-    if (!clear(sx, sy, c.r * viewer.s)) continue;
-    const d = Math.hypot(sx - cx, sy - cy) + (c.star ? 0 : 1e6);
-    if (d < bd) { bd = d; best = c; }
-  }
-  return best;
-}
-function showTips(m) {
-  tipsDone = true;
-  try { localStorage.setItem(TIPS_KEY, '1'); } catch { /* private mode: at most once per page load */ }
-  tips = { step: 1, at: m, cam: camNow() };
-  document.addEventListener('pointerdown', tipsDown, true);
-  fillTips();
-}
-function fillTips() {
-  const one = tips.step === 1;
-  $('#et-text').innerHTML = one ? `<b>Gold marks are the story's biggest moments.</b> White ones are smaller. ${phone ? 'Tap' : 'Click'} any mark to read it.`
-    : `<b>Every event, in story order.</b> Turn on Highlights only to see just the gold ones.`;
-  $('#et-step').textContent = one ? '1 of 2' : '2 of 2';
-  $('#et-go').textContent = one ? 'Next' : 'Got it';
-  tipsEl.hidden = false;
-  etRing.classList.toggle('u-rect', !one);
-  etRing.classList.remove('u-pulse'); void etRing.offsetWidth; etRing.classList.add('u-pulse');
-  etBub.classList.remove('on');
-  placeTips();
-  requestAnimationFrame(() => requestAnimationFrame(() => tips && etBub.classList.add('on')));
-}
-function placeTips() {   // step 1: a circle round the mark, the bubble below it (above without room); step 2: round the Events button
-  if (!tips || tips.step === 'wait') return;
-  const vw = innerWidth, vh = innerHeight, g = 14, m = 16;
-  let box;
-  if (tips.step === 1) {
-    const [x, y] = viewer.toScreen(tips.at.x, tips.at.y), r = tips.at.r * viewer.s + 8;
-    box = [x - r, y - r, x + r, y + r];
-  } else { const b = dockBtn.getBoundingClientRect(); box = [b.left - 5, b.top - 5, b.right + 5, b.bottom + 5]; }
-  Object.assign(etRing.style, { transform: `translate(${box[0].toFixed(1)}px,${box[1].toFixed(1)}px)`, width: `${(box[2] - box[0]).toFixed(1)}px`, height: `${(box[3] - box[1]).toFixed(1)}px` });
-  const w = etBub.offsetWidth, h = etBub.offsetHeight, cx = (box[0] + box[2]) / 2, cy = (box[1] + box[3]) / 2;
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  let side, x, y;
-  if (tips.step === 2 && land) { side = 'left'; x = box[0] - g - w; y = clamp(cy - h / 2, m, vh - m - h); }
-  else {
-    side = tips.step === 2 || box[3] + g + h > vh - insets().bottom - 8 ? 'above' : 'below';
-    y = side === 'below' ? box[3] + g : box[1] - g - h; x = clamp(cx - w / 2, m, vw - m - w);
-  }
-  etBub.dataset.side = side;
-  etBub.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
-  etBub.style.setProperty('--ax', `${clamp(cx - x, 16, w - 16).toFixed(1)}px`); etBub.style.setProperty('--ay', `${clamp(cy - y, 16, h - 16).toFixed(1)}px`);
-}
-function endTips() {
-  clearTimeout(tipsTimer);
-  if (!tips) return;
-  tips = null; tipsEl.hidden = true; etBub.classList.remove('on');
-  document.removeEventListener('pointerdown', tipsDown, true);
-}
-// A press outside the bubble: on the poster, tap() decides (a mark leads on to step 2) and a pan ends it (frame,
-// onGestureStart); in the popup the tip led to, it carries on; anything else (a control, the Events button) ends it.
-function tipsDown(e) {
-  if (!tips || e.target.closest('#et-bubble, #stage')) return;
-  if (tips.step === 'wait' && e.target.closest('#pop')) return;
-  endTips();
-}
-function tipsTap(hit) {   // a tap on the poster while the tip shows: on a mark in step 1, its popup opens and step 2 waits
-  if (!tips) return;
-  if (tips.step === 1 && hit && (hit.kind === 'ev' || hit.kind === 'major')) { tips.step = 'wait'; tipsEl.hidden = true; etBub.classList.remove('on'); }
-  else endTips();
-}
-function tipsPopClosed() {
-  if (!tips || tips.step !== 'wait') return;
-  setTimeout(() => { if (tips && tips.step === 'wait' && !popState) { tips.step = 2; tips.cam = camNow(); fillTips(); } }, 300);
-}
-$('#et-go').addEventListener('click', () => { if (!tips) return; if (tips.step === 1) { tips.step = 2; fillTips(); } else endTips(); });
-$('#et-x').addEventListener('click', endTips);
-
 // ---------------------------------------------------------------- dialogs, menu, toolbar
 function closeDialogs() { for (const p of $$('.u-dlg')) p.hidden = true; if (search) search.close(); }
 function closeTransient() { closeDialogs(); closeSheet(); }
 function openPanel(id) {
-  endTips();
   const p = $('#' + id), was = !p.hidden;
   closeDialogs(); closePop(); closeSheet();
   if (was) return;
@@ -1578,24 +1827,27 @@ $('#b-in').onclick = () => zoomBy(1.5); $('#b-out').onclick = () => zoomBy(1 / 1
 
 addEventListener('keydown', e => {
   if (!viewer) return;
-  if (e.key === 'Escape' && tips && tips.step !== 'wait') { endTips(); return; }
   if (e.key === 'Escape' && !$('#search').hidden) { search.close(); return; }
   if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); return openSearch(); }
   if (e.key === 'Escape' && e.target.closest('.u-dlg')) { closeDialogs(); return; }
   if (e.target.closest('input, select, textarea, [contenteditable]')) return;
   if (e.key === '/') { e.preventDefault(); return openSearch(); }
-  if (e.key === 'Escape') {
-    if (popState) closePop();
-    else if (!evSheet.hidden) closeSheet();
-    else if ($$('.u-dlg').some(p => !p.hidden)) closeDialogs();
-    else if (focusArcId || focusLineP || focusCharName) unfocusArc();
-    return;
-  }
+  if (e.key === 'Escape') { escape(); return; }
   if (popState && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); return navStep(e.key === 'ArrowLeft' ? -1 : 1); }
   if (e.target.closest('button, a, summary') && (e.key === 'Enter' || e.key === ' ')) return;
   if (viewer.key(e)) e.preventDefault();
 });
 
+// Escape: the popup, then the events sheet or a dialog, then the characters dock's search text, then any focus, then
+// the characters dock
+function escape() {
+  if (popState) closePop();
+  else if (!evSheet.hidden) closeSheet();
+  else if ($$('.u-dlg').some(p => !p.hidden)) closeDialogs();
+  else if (chIsOpen() && chQ().value) chClearQ();
+  else if (focusArcId || focusLineP || focusCharName) unfocusArc();
+  else if (chIsOpen()) chClose();
+}
 function swipeToClose(el, close, when = () => true) {   // a downward swipe on a bottom sheet closes it
   let y0 = null, scroll0 = 0;
   el.addEventListener('pointerdown', e => { if (when() && e.pointerType !== 'mouse') { y0 = e.clientY; scroll0 = el.scrollTop; } });
@@ -1604,13 +1856,13 @@ function swipeToClose(el, close, when = () => true) {   // a downward swipe on a
   el.addEventListener('touchmove', e => { if (y0 != null && el.scrollTop <= 0 && e.touches[0].clientY > y0) e.preventDefault(); }, { passive: false });
 }
 
-// ---------------------------------------------------------------- spoilers: the Watched chip and the spoiler slider
-function updateSpoilerUI() {   // the chip states the visitor's progress: "Watched: all" or "Watched: E080" (landscape: "All", "E080")
+// ---------------------------------------------------------------- spoilers: the spoiler chip and the spoiler slider
+function updateSpoilerUI() {   // the spoiler chip: "Spoiler mode: off" or "Spoiler mode: E080" (landscape: "Spoilers", "E080")
   if (!settings) return;
-  const s = settings.spoiler, b = $('#b-watch'), v = s.on ? epNo(s.upTo) : land ? 'All' : 'all';
-  b.querySelector('.u-cl').textContent = land ? v : `Watched: ${v} ▾`;
+  const s = settings.spoiler, b = $('#b-watch'), v = s.on ? epNo(s.upTo) : 'off';
+  b.querySelector('.u-cl').textContent = land ? (s.on ? v : 'Spoilers') : `Spoiler mode: ${v} ▾`;
   b.classList.toggle('on', s.on);
-  b.setAttribute('aria-label', s.on ? `Watched up to ${epNo(s.upTo)}` : 'Watched: everything');
+  b.setAttribute('aria-label', s.on ? `Spoiler mode: watched up to ${epNo(s.upTo)}` : 'Spoiler mode: off');
 }
 // Positions 0 … M-1 are the episodes in number order, M is All (spoiler mode off). Any other position turns it on.
 function buildSpoilers() {
@@ -1671,9 +1923,39 @@ function buildSpoilers() {
 
 // ---------------------------------------------------------------- the More menu: Copy link to this view
 function viewLink() {   // the page's address for what's on screen now (the camera; the menu closed any popup)
-  return location.href.split('#')[0] + (atHome() ? '' : viewHash(viewer.view()));
+  return location.href.split('#')[0] + restHash();
+}
+// ---------------------------------------------------------------- visitor switches (the More menu), on by default, remembered
+// Characters: everything the characters feature adds, as the build flag does but at run time (shown only when the build
+// has the feature). Events dock: the dock or sheet, the Events button and the steppers; the poster's marks stay.
+function applySwitches() {
+  body.classList.toggle('chars', chOn());
+  body.classList.toggle('noevents', !eventsOn());
+  for (const b of $$('#m-switches [data-sw]')) b.setAttribute('aria-checked', b.dataset.sw === 'chars' ? chOn() : eventsOn());
+}
+function setSwitch(which, on) {
+  settings[which === 'chars' ? 'charsOn' : 'eventsOn'] = on; saveSettings();
+  if (which === 'chars') chVisit = false;
+  if (which === 'chars') {
+    if (!on) { if (focusCharName) unfocusArc(); chClose(); if (popState && pop.querySelector('.u-chrow')) closePop(); }
+    else chReady();
+    if (search) search.cacheKey = null;
+  } else {
+    if (!on) closeSheet();
+    buildLegend();
+  }
+  applySwitches(); syncDock(); tagBlock = null; chSnapChip();
+  if (viewer) frame(viewer.view());
+}
+function buildSwitches() {
+  const row = (k, t, sub) => `<button class="u-msw" role="switch" data-sw="${k}"><span><b>${t}</b><small>${sub}</small></span><span class="u-track" aria-hidden="true"></span></button>`;
+  $('#m-switches').innerHTML = (data.charactersOn ? row('chars', 'Characters', 'The Characters button and who is in each episode') : '') +
+    row('events', 'Events dock', 'The Events button and its list of every event');
+  $('#m-switches').onclick = e => { const b = e.target.closest('[data-sw]'); if (b) setSwitch(b.dataset.sw, b.getAttribute('aria-checked') !== 'true'); };
+  applySwitches();
 }
 function buildMenu() {
+  buildSwitches();
   const sub = $('#m-copy-sub'), text = sub.textContent;
   $('#m-copy').onclick = async () => {
     const url = viewLink();
@@ -1795,6 +2077,6 @@ export async function exportPNG(scale, transparent, progress = () => {}) {
   } finally { URL.revokeObjectURL(url); }
 }
 window.__exportPNG = (s, t) => exportPNG(s, t);
-window.__app = () => ({ atHome, data, settings, viewer, draw, saveSettings, openPop, closePop, focusArc, unfocusArc, focusLine, focusChar, focus: () => ({ arc: focusArcId, line: focusLineP, char: focusCharName }), nearestHit, nearMajor, highlight, search, zoomPct, fitScale, popState, tips: () => tips && { step: tips.step, at: tips.at }, endTips, setPreset, theme, viewLink, dockStep, dockSel, warmed: () => Object.keys(nebulae) });
+window.__app = () => ({ atHome, data, settings, viewer, draw, saveSettings, openPop, closePop, focusArc, unfocusArc, focusLine, focusChar, charsOn: () => chOn(), setSwitch, chPick, chOpen, chClose, chStep, chars: () => ({ loaded: !!CH, open: chIsOpen(), view: chView, card: chCardId, step: chStepK }), focus: () => ({ arc: focusArcId, line: focusLineP, char: focusCharName }), nearestHit, nearMajor, highlight, search, zoomPct, fitScale, popState, setPreset, theme, viewLink, dockStep, dockSel, warmed: () => Object.keys(nebulae) });
 
 start().catch(err => { $('#load-text').textContent = 'Could not load the timeline: ' + err.message; console.error(err); });

@@ -11,6 +11,7 @@ export class Viewer {
   constructor(stage, content, W, H, opts) {
     Object.assign(this, { stage, content, W, H, opts });
     this.s = 1; this.tx = 0; this.ty = 0;
+    this.slack = { r: 0, b: 0 }; this.lastRoom = { r: 0, b: 0 };
     this.pointers = new Map();
     this.settleTimer = null;
     this.anim = null;
@@ -31,14 +32,19 @@ export class Viewer {
     return this.opts.fitHeight() ? fitH : Math.min((a.x1 - a.x0) / this.W, fitH);
   }
 
-  // allowed translation on one axis: [lo, hi]; equal when the poster is smaller than the area (centred)
-  range(size, a0, a1) {
-    if (size <= a1 - a0) { const c = a0 + (a1 - a0 - size) / 2; return [c, c]; }
-    return [a1 - size, a0];
+  // allowed translation on one axis: [lo, hi]; equal when the poster is smaller than the area (centred). `e` is extra
+  // room past the far edge (right or bottom), so that a panel over the poster doesn't hide its end.
+  range(size, a0, a1, e = 0) {
+    const [lo, hi] = size <= a1 - a0 ? [a0 + (a1 - a0 - size) / 2, a0 + (a1 - a0 - size) / 2] : [a1 - size, a0];
+    return [Math.min(lo, a1 - e - size), hi];
   }
-  bounds(s) {
+  // The extra room: opts.extra() while a panel covers the poster's right or bottom (screen px). When it goes, the room
+  // it gave stays as `slack`, so the camera doesn't jump, and shrinks to how far the camera still is past the normal
+  // limit at each move: the next move toward the edge stops where the camera is, any move back tightens it.
+  room() { const e = this.opts.extra && this.opts.extra() || { r: 0, b: 0 }; return { r: e.r, b: e.b, sr: Math.max(e.r, this.slack.r), sb: Math.max(e.b, this.slack.b) }; }
+  bounds(s, e = this.room()) {
     const a = this.area();
-    return { x: this.range(this.W * s, a.x0, a.x1), y: this.range(this.H * s, a.y0, a.y1) };
+    return { x: this.range(this.W * s, a.x0, a.x1, e.sr), y: this.range(this.H * s, a.y0, a.y1, e.sb) };
   }
   clampS(s) { return Math.min(this.opts.maxScale, Math.max(this.minScale, s)); }
   rubber(v, [lo, hi]) {   // past an edge, the offset grows with resistance and never beyond rubberMax
@@ -55,7 +61,7 @@ export class Viewer {
   home() {   // desktop: the whole poster; phone: its full height from the left edge (the title and the faces);
     // landscape phone: homeScale() from the top left corner
     const hs = this.opts.homeScale && this.opts.homeScale();
-    const s = hs ? this.clampS(hs) : this.minScale, b = this.bounds(s);
+    const s = hs ? this.clampS(hs) : this.minScale, b = this.bounds(s, { sr: 0, sb: 0 });   // the normal limits: home ignores a panel's room
     return { s, tx: b.x[1], ty: hs ? b.y[1] : (b.y[0] + b.y[1]) / 2 };
   }
 
@@ -63,10 +69,20 @@ export class Viewer {
   // drags); 'free' takes the position as given (a glide, which ends inside the bounds)
   set(s, tx, ty, settle = true, mode = 'clamp') {
     s = this.clampS(s);
-    const b = this.bounds(s);
+    const e = this.room();
+    if (mode !== 'free') {   // a panel that just went leaves its room behind as slack (see room())
+      this.slack = { r: Math.max(this.slack.r, this.lastRoom.r), b: Math.max(this.slack.b, this.lastRoom.b) };
+      this.lastRoom = { r: e.r, b: e.b };
+      e.sr = Math.max(e.r, this.slack.r); e.sb = Math.max(e.b, this.slack.b);
+    }
+    const b = this.bounds(s, e);
     if (mode === 'rubber') { tx = this.rubber(tx, b.x); ty = this.rubber(ty, b.y); } else if (mode === 'clamp') {
       tx = Math.min(b.x[1], Math.max(b.x[0], tx));
       ty = Math.min(b.y[1], Math.max(b.y[0], ty));
+    }
+    if (mode !== 'free') {   // the slack shrinks to how far past the panel's own limit the camera still is
+      const n = this.bounds(s, { sr: e.r, sb: e.b });
+      this.slack = { r: Math.min(this.slack.r, Math.max(0, n.x[0] - tx)), b: Math.min(this.slack.b, Math.max(0, n.y[0] - ty)) };
     }
     this.s = s; this.tx = tx; this.ty = ty;
     this.content.style.transform = `translate(${tx}px,${ty}px) scale(${s})`;
@@ -146,10 +162,10 @@ export class Viewer {
 
   springBack() { if (this.outOfBounds()) this.animateTo({ s: this.s, tx: this.tx, ty: this.ty }, this.opts.rubberMs, 'out'); }
 
-  focusBox(x0, y0, x1, y1, maxS = 0.9) {   // bring a poster box to the centre at a readable scale
-    const a = this.area();
+  // bring a poster box to the centre of area a (by default the whole poster area) at a readable scale
+  focusBox(x0, y0, x1, y1, maxS = 0.9, a = this.area()) {
     const s = Math.min(maxS, 0.85 * Math.min((a.x1 - a.x0) / (x1 - x0), (a.y1 - a.y0) / (y1 - y0)));
-    this.animateTo(this.centreOn((x0 + x1) / 2, (y0 + y1) / 2, s));
+    this.animateTo(this.centreOn((x0 + x1) / 2, (y0 + y1) / 2, s, (a.y0 + a.y1) / 2, (a.x0 + a.x1) / 2));
   }
 
   bind() {
