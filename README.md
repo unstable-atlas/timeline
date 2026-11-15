@@ -1,6 +1,6 @@
 # Unstable Universe Timeline
 
-An interactive story timeline of the Unstable Universe (Unstable SMP) Minecraft series: every canon episode from E001 to E159, its arcs and its key events, placed in story order on one map you can pan, zoom and search.
+An interactive story timeline of the Unstable Universe (Unstable SMP) Minecraft series: every canon episode from E001 to E161, its arcs and its key events, placed in story order on one map you can pan, zoom and search.
 
 **Open it: https://unstable-atlas.github.io/timeline/**
 
@@ -160,7 +160,7 @@ This is a fan project. It is unofficial and not affiliated with or endorsed by t
 | E141 | [1000 Players Simulate HUNGER GAMES in Hardcore Minecraft](https://www.youtube.com/watch?v=ipEi6kkTIlI) | SpokeIsHere |
 | E142 | [I Got Hunted By the World's Deadliest Minecraft Player](https://www.youtube.com/watch?v=ljppGDO4HlU) | FlameFrags |
 | E143 | [Unstable SMP: Purgatory](https://www.youtube.com/watch?v=8_Au10osdEo) | SpokeIsHere |
-| E144 | [I Got Trained By a Minecraft Combat Master (Warriors Arc)](https://www.youtube.com/watch?v=yBy5NnLTiWQ) | FlameFrags |
+| E144 | [I Got Trained By a Minecraft Combat Master](https://www.youtube.com/watch?v=yBy5NnLTiWQ) | FlameFrags |
 | E145 | [Minecraft's Best Players Simulate PVP Tournament](https://www.youtube.com/watch?v=BCiRLHaeHkI) | FlameFrags |
 | E146 | [1000 Players Build END Civilization in Hardcore Minecraft](https://www.youtube.com/watch?v=ynkhNRpQ9Xc) | SpokeIsHere |
 | E147 | [I Built Minecraft's Most Advanced Civilization](https://www.youtube.com/watch?v=1EgS0othQe4) | ParrotX2 |
@@ -176,3 +176,5 @@ This is a fan project. It is unofficial and not affiliated with or endorsed by t
 | E157 | [Escaping Terminus: The Deadliest Minecraft Prison](https://www.youtube.com/watch?v=8t8YBu7bdT0) | FlameFrags |
 | E158 | [1000 Players Simulate End Prison in Minecraft](https://www.youtube.com/watch?v=9-j9GWjyWpY) | ParrotX2 |
 | E159 | [10,000 Players Simulate COLD WAR in Minecraft](https://www.youtube.com/watch?v=y5IdSoHdkgg) | SpokeIsHere |
+| E160 | [10,000 VS 10,000 Player Minecraft War](https://www.youtube.com/watch?v=ZT-k42SC7L0) | FlameFrags |
+| E161 | [10,000 Player Minecraft War: Nether VS Overworld](https://www.youtube.com/watch?v=bHxLy6Qza3M) | ParrotX2 |
